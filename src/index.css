@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+:root {
+  --pitch: #15803d;
+  --pitch-dark: #14532d;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #f4f8f4;
+  color: #14213d;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
+}
