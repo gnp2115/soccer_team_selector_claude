@@ -1,8 +1,18 @@
 @import "tailwindcss";
 
+/*
+  Columbia Football Club palette.
+  Columbia Blue and the primary blue are Columbia University's official brand
+  colours (visualidentity.columbia.edu). Navy and gold are taken from the club crest.
+*/
 :root {
-  --pitch: #15803d;
-  --pitch-dark: #14532d;
+  --navy: #13375e;
+  --navy-deep: #0d2745;
+  --blue: #1d4f91;
+  --columbia: #b9d9eb;
+  --columbia-soft: #e2eff8;
+  --gold: #c9a43c;
+  --gold-soft: #f0e2bd;
 }
 
 html,
@@ -13,8 +23,16 @@ body,
 
 body {
   margin: 0;
-  background: #f4f8f4;
-  color: #14213d;
+  color: var(--navy-deep);
+  background-color: #f2f8fc;
+  /* Faint diagonal stripes, echoing the lower half of the crest shield. */
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(185, 217, 235, 0.22) 0px,
+    rgba(185, 217, 235, 0.22) 14px,
+    transparent 14px,
+    transparent 28px
+  );
   font-family:
     system-ui,
     -apple-system,

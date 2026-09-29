@@ -13,7 +13,17 @@ import {
 } from "./lib/teams";
 import { parsePlayerList, type ParseResult } from "./lib/parse";
 
-const TEST_LIST_PLACEHOLDER = "Mario Braga, 5, Goalkeeper";
+const NAVY = "#13375e";
+const BLUE = "#1d4f91";
+const COLUMBIA = "#b9d9eb";
+const COLUMBIA_SOFT = "#e2eff8";
+const GOLD = "#c9a43c";
+
+/** Shared button styles, so the whole app stays on the club palette. */
+const primaryBtn =
+  "h-12 w-full rounded-xl text-base font-bold text-white shadow-sm transition disabled:bg-slate-300 disabled:text-slate-500";
+const ghostBtn =
+  "h-12 rounded-xl border-2 bg-white text-sm font-semibold transition";
 
 function PosTags({ positions }: { positions: Position[] }) {
   return (
@@ -21,12 +31,26 @@ function PosTags({ positions }: { positions: Position[] }) {
       {positions.map((p) => (
         <span
           key={p}
-          className="rounded-md bg-emerald-100 px-1.5 py-0.5 text-xs font-semibold text-emerald-800"
+          className="rounded-md px-1.5 py-0.5 text-xs font-bold"
+          style={{ backgroundColor: COLUMBIA_SOFT, color: BLUE }}
         >
           {POSITION_SHORT[p]}
         </span>
       ))}
     </div>
+  );
+}
+
+function SkillBadge({ value, small }: { value: number; small?: boolean }) {
+  return (
+    <span
+      className={`flex shrink-0 items-center justify-center rounded-full font-bold ${
+        small ? "h-8 w-8 text-sm" : "h-9 w-9 text-sm"
+      }`}
+      style={{ backgroundColor: COLUMBIA, color: NAVY }}
+    >
+      {value}
+    </span>
   );
 }
 
@@ -92,11 +116,12 @@ export default function App() {
   };
 
   const readList = () => {
-    const result = parsePlayerList(
-      pasteText,
-      players.map((p) => p.name),
+    setPreview(
+      parsePlayerList(
+        pasteText,
+        players.map((p) => p.name),
+      ),
     );
-    setPreview(result);
     setPasteNote(null);
   };
 
@@ -120,21 +145,50 @@ export default function App() {
 
   return (
     <div className="mx-auto min-h-screen w-full max-w-2xl pb-16">
-      <header className="bg-emerald-700 px-4 py-6 text-white">
-        <h1 className="text-2xl font-extrabold">Soccer Team Selector</h1>
-        <p className="mt-1 text-sm text-emerald-50">
-          Fair sides in one tap, balanced by skill, keepers and positions.
-        </p>
+      {/* Header */}
+      <header
+        className="flex items-center gap-4 px-4 py-5 text-white"
+        style={{
+          background: `linear-gradient(135deg, ${NAVY} 0%, ${BLUE} 100%)`,
+          borderBottom: `4px solid ${GOLD}`,
+        }}
+      >
+        <img
+          src="/columbia-fc.png"
+          alt="Columbia Football Club crest"
+          className="h-16 w-16 shrink-0 rounded-full bg-white p-0.5 shadow-md"
+        />
+        <div className="min-w-0">
+          <p
+            className="text-xs font-bold tracking-[0.2em] uppercase"
+            style={{ color: COLUMBIA }}
+          >
+            Columbia Football Club
+          </p>
+          <h1 className="text-2xl leading-tight font-extrabold">
+            Team Selector
+          </h1>
+          <p className="mt-0.5 text-sm" style={{ color: COLUMBIA }}>
+            Fair sides in one tap, balanced by skill, keepers and positions.
+          </p>
+        </div>
       </header>
 
       {/* Add players */}
       <section className="px-4 pt-6">
-        <h2 className="mb-3 text-lg font-bold">Add players</h2>
+        <h2 className="mb-3 text-lg font-bold" style={{ color: NAVY }}>
+          Add players
+        </h2>
         <form
           onSubmit={addPlayer}
-          className="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm"
+          className="rounded-2xl border-2 bg-white p-4 shadow-sm"
+          style={{ borderColor: COLUMBIA }}
         >
-          <label className="block text-sm font-semibold" htmlFor="name">
+          <label
+            className="block text-sm font-bold"
+            htmlFor="name"
+            style={{ color: NAVY }}
+          >
             Name
           </label>
           <input
@@ -142,39 +196,54 @@ export default function App() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Marlo"
-            className="mt-1 h-12 w-full rounded-xl border border-slate-200 px-3 text-base"
+            className="mt-1 h-12 w-full rounded-xl border-2 px-3 text-base outline-none focus:border-[#1d4f91]"
+            style={{ borderColor: COLUMBIA_SOFT }}
           />
 
-          <p className="mt-4 text-sm font-semibold">Skill level</p>
+          <p className="mt-4 text-sm font-bold" style={{ color: NAVY }}>
+            Skill level
+          </p>
           <div className="mt-1 grid grid-cols-5 gap-2">
             {[1, 2, 3, 4, 5].map((n) => (
               <button
                 key={n}
                 type="button"
                 onClick={() => setSkill(n)}
-                className={`h-12 rounded-xl border text-base font-bold ${
+                className="h-12 rounded-xl border-2 text-base font-bold transition"
+                style={
                   skill === n
-                    ? "border-emerald-700 bg-emerald-700 text-white"
-                    : "border-slate-200 bg-white"
-                }`}
+                    ? { borderColor: BLUE, backgroundColor: BLUE, color: "#fff" }
+                    : {
+                        borderColor: COLUMBIA_SOFT,
+                        backgroundColor: "#fff",
+                        color: NAVY,
+                      }
+                }
               >
                 {n}
               </button>
             ))}
           </div>
 
-          <p className="mt-4 text-sm font-semibold">Positions</p>
+          <p className="mt-4 text-sm font-bold" style={{ color: NAVY }}>
+            Positions
+          </p>
           <div className="mt-1 grid grid-cols-2 gap-2">
             {POSITIONS.map((p) => (
               <button
                 key={p}
                 type="button"
                 onClick={() => togglePosition(p)}
-                className={`h-12 rounded-xl border text-sm font-semibold ${
+                className="h-12 rounded-xl border-2 text-sm font-semibold transition"
+                style={
                   positions.includes(p)
-                    ? "border-emerald-700 bg-emerald-700 text-white"
-                    : "border-slate-200 bg-white"
-                }`}
+                    ? { borderColor: BLUE, backgroundColor: BLUE, color: "#fff" }
+                    : {
+                        borderColor: COLUMBIA_SOFT,
+                        backgroundColor: "#fff",
+                        color: NAVY,
+                      }
+                }
               >
                 {p}
               </button>
@@ -182,14 +251,13 @@ export default function App() {
           </div>
 
           {formError && (
-            <p className="mt-3 text-sm font-semibold text-red-600">
-              {formError}
-            </p>
+            <p className="mt-3 text-sm font-bold text-red-700">{formError}</p>
           )}
 
           <button
             type="submit"
-            className="mt-4 h-12 w-full rounded-xl bg-emerald-700 text-base font-bold text-white"
+            className={`mt-4 ${primaryBtn}`}
+            style={{ backgroundColor: BLUE }}
           >
             Add player
           </button>
@@ -198,41 +266,48 @@ export default function App() {
             <button
               type="button"
               onClick={loadExample}
-              className="h-12 rounded-xl border border-slate-200 bg-white text-sm font-semibold"
+              className={ghostBtn}
+              style={{ borderColor: COLUMBIA, color: NAVY }}
             >
               Load example players
             </button>
             <button
               type="button"
               onClick={() => setPasteOpen((v) => !v)}
-              className="h-12 rounded-xl border border-slate-200 bg-white text-sm font-semibold"
+              className={ghostBtn}
+              style={{ borderColor: COLUMBIA, color: NAVY }}
             >
               Paste list
             </button>
           </div>
 
           {pasteOpen && (
-            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <p className="text-xs text-slate-600">
+            <div
+              className="mt-3 rounded-xl border-2 p-3"
+              style={{ borderColor: COLUMBIA, backgroundColor: "#f6fbfe" }}
+            >
+              <p className="text-xs font-semibold" style={{ color: BLUE }}>
                 One player per line: name, skill, positions
               </p>
               <textarea
                 value={pasteText}
                 onChange={(e) => setPasteText(e.target.value)}
-                placeholder={TEST_LIST_PLACEHOLDER}
+                placeholder="Mario Braga, 5, Goalkeeper"
                 rows={6}
-                className="mt-2 w-full rounded-xl border border-slate-200 p-3 font-mono text-sm"
+                className="mt-2 w-full rounded-xl border-2 p-3 font-mono text-sm outline-none focus:border-[#1d4f91]"
+                style={{ borderColor: COLUMBIA_SOFT }}
               />
               <button
                 type="button"
                 onClick={readList}
-                className="h-11 w-full rounded-xl border border-emerald-700 bg-white text-sm font-bold text-emerald-800"
+                className="h-11 w-full rounded-xl border-2 bg-white text-sm font-bold"
+                style={{ borderColor: BLUE, color: BLUE }}
               >
                 Read list
               </button>
 
               {pasteNote && (
-                <p className="mt-2 text-sm font-semibold text-emerald-800">
+                <p className="mt-2 text-sm font-bold" style={{ color: BLUE }}>
                   {pasteNote}
                 </p>
               )}
@@ -242,13 +317,15 @@ export default function App() {
                   {preview.players.map((p, i) => (
                     <div
                       key={`${p.name}-${i}`}
-                      className="mt-2 flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-2"
+                      className="mt-2 flex items-center gap-3 rounded-xl border-2 bg-white p-2"
+                      style={{ borderColor: COLUMBIA_SOFT }}
                     >
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-sm font-bold text-emerald-800">
-                        {p.skill}
-                      </span>
+                      <SkillBadge value={p.skill} small />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold">
+                        <p
+                          className="truncate text-sm font-bold"
+                          style={{ color: NAVY }}
+                        >
                           {p.name}
                         </p>
                         <PosTags positions={p.positions} />
@@ -269,31 +346,44 @@ export default function App() {
                   ))}
 
                   {preview.skipped.length > 0 && (
-                    <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-3">
-                      <p className="text-sm font-bold text-amber-900">
+                    <div
+                      className="mt-3 rounded-xl border-2 p-3"
+                      style={{
+                        borderColor: GOLD,
+                        backgroundColor: "#fdf8ea",
+                      }}
+                    >
+                      <p className="text-sm font-bold" style={{ color: NAVY }}>
                         Skipped {preview.skipped.length} line
                         {preview.skipped.length === 1 ? "" : "s"}
                       </p>
                       {preview.skipped.map((s, i) => (
                         <div key={i} className="mt-2 text-xs">
                           <p className="font-mono text-slate-700">{s.line}</p>
-                          <p className="text-amber-800">{s.reason}</p>
+                          <p className="font-semibold" style={{ color: "#8a6d1f" }}>
+                            {s.reason}
+                          </p>
                         </div>
                       ))}
                     </div>
                   )}
 
-                  {preview.players.length === 0 ? (
+                  {preview.players.length === 0 && (
                     <p className="mt-3 text-sm text-slate-600">
                       Nothing could be read from this list.
                     </p>
-                  ) : null}
+                  )}
 
                   <button
                     type="button"
                     onClick={addFromPreview}
                     disabled={preview.players.length === 0}
-                    className="mt-3 h-11 w-full rounded-xl bg-emerald-700 text-sm font-bold text-white disabled:bg-slate-300"
+                    className="mt-3 h-11 w-full rounded-xl text-sm font-bold text-white disabled:bg-slate-300 disabled:text-slate-500"
+                    style={
+                      preview.players.length
+                        ? { backgroundColor: BLUE }
+                        : undefined
+                    }
                   >
                     Add {preview.players.length} player
                     {preview.players.length === 1 ? "" : "s"}
@@ -308,7 +398,7 @@ export default function App() {
       {/* Roster */}
       <section className="px-4 pt-6">
         <div className="mb-2 flex items-center justify-between gap-3">
-          <h2 className="text-lg font-bold">
+          <h2 className="text-lg font-bold" style={{ color: NAVY }}>
             {players.length} player{players.length === 1 ? "" : "s"}
           </h2>
           {players.length > 0 &&
@@ -317,14 +407,16 @@ export default function App() {
                 <button
                   type="button"
                   onClick={clearAll}
-                  className="h-11 rounded-xl bg-red-600 px-3 text-sm font-semibold text-white"
+                  className="h-11 rounded-xl px-3 text-sm font-bold text-white"
+                  style={{ backgroundColor: "#a3242f" }}
                 >
                   Clear {players.length}
                 </button>
                 <button
                   type="button"
                   onClick={() => setConfirmClear(false)}
-                  className="h-11 rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-600"
+                  className="h-11 rounded-xl border-2 bg-white px-3 text-sm font-semibold"
+                  style={{ borderColor: COLUMBIA, color: NAVY }}
                 >
                   Cancel
                 </button>
@@ -333,7 +425,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setConfirmClear(true)}
-                className="h-11 rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-600"
+                className="h-11 rounded-xl border-2 bg-white px-3 text-sm font-semibold"
+                style={{ borderColor: COLUMBIA, color: NAVY }}
               >
                 Clear all
               </button>
@@ -341,7 +434,10 @@ export default function App() {
         </div>
 
         {players.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-500">
+          <p
+            className="rounded-2xl border-2 border-dashed bg-white p-6 text-center text-sm"
+            style={{ borderColor: COLUMBIA, color: BLUE }}
+          >
             No players yet. Add someone or load the example squad.
           </p>
         ) : (
@@ -349,13 +445,14 @@ export default function App() {
             {players.map((p) => (
               <li
                 key={p.id}
-                className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3"
+                className="flex items-center gap-3 rounded-xl border-2 bg-white p-3"
+                style={{ borderColor: COLUMBIA_SOFT }}
               >
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-sm font-bold text-emerald-800">
-                  {p.skill}
-                </span>
+                <SkillBadge value={p.skill} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate font-semibold">{p.name}</p>
+                  <p className="truncate font-bold" style={{ color: NAVY }}>
+                    {p.name}
+                  </p>
                   <PosTags positions={p.positions} />
                 </div>
                 <button
@@ -365,7 +462,8 @@ export default function App() {
                     setSplit(null);
                   }}
                   aria-label={`Remove ${p.name}`}
-                  className="h-11 w-11 rounded-xl border border-slate-200 text-lg font-bold text-slate-500"
+                  className="h-11 w-11 rounded-xl border-2 text-lg font-bold"
+                  style={{ borderColor: COLUMBIA_SOFT, color: BLUE }}
                 >
                   ×
                 </button>
@@ -377,9 +475,16 @@ export default function App() {
 
       {/* Make teams */}
       <section className="px-4 pt-6">
-        <h2 className="mb-2 text-lg font-bold">Make teams</h2>
-        <div className="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm">
-          <p className="text-sm font-semibold">Number of teams</p>
+        <h2 className="mb-2 text-lg font-bold" style={{ color: NAVY }}>
+          Make teams
+        </h2>
+        <div
+          className="rounded-2xl border-2 bg-white p-4 shadow-sm"
+          style={{ borderColor: COLUMBIA }}
+        >
+          <p className="text-sm font-bold" style={{ color: NAVY }}>
+            Number of teams
+          </p>
           <div className="mt-1 grid grid-cols-3 gap-2">
             {[2, 3, 4].map((n) => (
               <button
@@ -389,11 +494,16 @@ export default function App() {
                   setTeamCount(n);
                   setSplit(null);
                 }}
-                className={`h-12 rounded-xl border text-base font-bold ${
+                className="h-12 rounded-xl border-2 text-base font-bold transition"
+                style={
                   teamCount === n
-                    ? "border-emerald-700 bg-emerald-700 text-white"
-                    : "border-slate-200 bg-white"
-                }`}
+                    ? { borderColor: BLUE, backgroundColor: BLUE, color: "#fff" }
+                    : {
+                        borderColor: COLUMBIA_SOFT,
+                        backgroundColor: "#fff",
+                        color: NAVY,
+                      }
+                }
               >
                 {n}
               </button>
@@ -404,12 +514,13 @@ export default function App() {
             type="button"
             onClick={run}
             disabled={!canMake}
-            className="mt-3 h-12 w-full rounded-xl bg-emerald-700 text-base font-bold text-white disabled:bg-slate-300"
+            className={`mt-3 ${primaryBtn}`}
+            style={canMake ? { backgroundColor: BLUE } : undefined}
           >
             Make teams
           </button>
           {!canMake && (
-            <p className="mt-2 text-sm text-slate-600">
+            <p className="mt-2 text-sm" style={{ color: BLUE }}>
               Need at least {teamCount * 2} players for {teamCount} teams.
             </p>
           )}
@@ -420,45 +531,67 @@ export default function App() {
       {split && (
         <section className="px-4 pt-6">
           <div className="flex items-baseline justify-between">
-            <h2 className="text-lg font-bold">Teams</h2>
-            <span className="text-sm font-semibold text-slate-600">
+            <h2 className="text-lg font-bold" style={{ color: NAVY }}>
+              Teams
+            </h2>
+            <span
+              className="rounded-lg px-2 py-1 text-sm font-bold"
+              style={{ backgroundColor: "#f5ead0", color: "#7d6218" }}
+            >
               Skill gap: {skillGap(split.teams)}
             </span>
           </div>
 
           {split.warning && (
-            <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">
+            <p
+              className="mt-2 rounded-xl border-2 p-3 text-sm font-bold"
+              style={{
+                borderColor: GOLD,
+                backgroundColor: "#fdf8ea",
+                color: "#7d6218",
+              }}
+            >
               {split.warning}
             </p>
           )}
           {reshuffleNote && (
-            <p className="mt-2 text-sm text-slate-600">{reshuffleNote}</p>
+            <p className="mt-2 text-sm" style={{ color: BLUE }}>
+              {reshuffleNote}
+            </p>
           )}
 
           <div className="mt-3 space-y-3">
             {split.teams.map((team, i) => (
               <div
                 key={i}
-                className="rounded-2xl border border-emerald-100 bg-white p-4 shadow-sm"
+                className="overflow-hidden rounded-2xl border-2 bg-white shadow-sm"
+                style={{ borderColor: COLUMBIA }}
               >
-                <div className="flex items-baseline justify-between">
-                  <h3 className="font-bold">Team {i + 1}</h3>
-                  <span className="text-sm text-slate-600">
-                    {team.players.length} players ·{" "}
-                    {totalSkill(team.players)} skill
+                <div
+                  className="flex items-baseline justify-between px-4 py-2 text-white"
+                  style={{ backgroundColor: NAVY }}
+                >
+                  <h3 className="font-extrabold">Team {i + 1}</h3>
+                  <span className="text-sm" style={{ color: COLUMBIA }}>
+                    {team.players.length} players · {totalSkill(team.players)}{" "}
+                    skill
                   </span>
                 </div>
-                <ul className="mt-2 space-y-2">
+                <ul className="space-y-2 p-4">
                   {team.players.map((p) => (
                     <li key={p.id} className="flex items-center gap-3">
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-sm font-bold text-emerald-800">
-                        {p.skill}
-                      </span>
+                      <SkillBadge value={p.skill} small />
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold">
+                        <p
+                          className="truncate text-sm font-bold"
+                          style={{ color: NAVY }}
+                        >
                           {p.name}
                           {team.keeperId === p.id && (
-                            <span className="ml-2 rounded-md bg-emerald-700 px-1.5 py-0.5 text-xs font-bold text-white">
+                            <span
+                              className="ml-2 rounded-md px-1.5 py-0.5 text-xs font-extrabold"
+                              style={{ backgroundColor: GOLD, color: "#3d2f08" }}
+                            >
                               GK
                             </span>
                           )}
@@ -475,7 +608,8 @@ export default function App() {
           <button
             type="button"
             onClick={run}
-            className="mt-3 h-12 w-full rounded-xl border border-emerald-700 bg-white text-base font-bold text-emerald-800"
+            className="mt-3 h-12 w-full rounded-xl border-2 bg-white text-base font-bold"
+            style={{ borderColor: BLUE, color: BLUE }}
           >
             Reshuffle
           </button>
