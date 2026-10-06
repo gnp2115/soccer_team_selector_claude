@@ -1,14 +1,34 @@
-import type { Player, Position } from "./teams";
+import type { Position } from "./teams";
+import {
+  findSaved,
+  fullName,
+  splitName,
+  type SavedPlayer,
+} from "./roster";
 
-export type ParsedPlayer = Omit<Player, "id"> & {
-  skillDefaulted: boolean;
-  positionDefaulted: boolean;
-  /** True when a missing skill or position was filled in from the saved roster. */
+/** A player read from the list with everything known: ready to add. */
+export type ParsedPlayer = {
+  firstName: string;
+  lastName: string;
+  skill: number;
+  positions: Position[];
+  /** True when the skill or positions came from the saved database. */
   fromRoster: boolean;
+  /** True when this name is not in the saved database yet. */
+  isNew: boolean;
 };
 
-/** The parts of a saved roster player the parser needs. */
-export type KnownPlayer = Pick<Player, "name" | "skill" | "positions">;
+/**
+ * A new name the list did not fully describe. It cannot be added until someone
+ * fills in what is missing. Whatever the line did say is kept.
+ */
+export type PendingPlayer = {
+  line: string;
+  firstName: string;
+  lastName: string;
+  skill: number | null;
+  positions: Position[];
+};
 
 export type SkippedLine = {
   line: string;
@@ -17,6 +37,7 @@ export type SkippedLine = {
 
 export type ParseResult = {
   players: ParsedPlayer[];
+  needsDetails: PendingPlayer[];
   skipped: SkippedLine[];
 };
 
@@ -45,9 +66,6 @@ const POSITION_WORDS: Record<string, Position> = {
   striker: "Attacker",
   atacante: "Attacker",
 };
-
-const DEFAULT_SKILL = 3;
-const DEFAULT_POSITION: Position = "Midfielder";
 
 /** Strip accents so "meio-campo" and "meio-câmpo" both match. */
 function normalise(text: string) {
@@ -79,20 +97,24 @@ function stripLeadingClutter(line: string) {
 /**
  * Read a pasted list into players.
  *
- * `existingNames` are the players already in today's list, which get skipped.
- * `known` is the saved roster: when a line gives only a name, or leaves out the
- * skill or positions, the saved values fill the gap. Anything written explicitly
- * on the line still wins over the saved value.
+ * Each line is a name, optionally followed by a skill and positions. For a name
+ * already in the saved database, anything the line leaves out comes from the
+ * database, and anything the line does say wins. A new name has no fallback: if
+ * the line does not give both a skill and a position, it goes to `needsDetails`
+ * so someone fills it in, rather than being given a made-up default.
+ *
+ * `todayNames` are the players already in today's list, which get skipped.
  */
 export function parsePlayerList(
   text: string,
-  existingNames: string[] = [],
-  known: KnownPlayer[] = [],
+  todayNames: string[] = [],
+  saved: SavedPlayer[] = [],
 ): ParseResult {
   const players: ParsedPlayer[] = [];
+  const needsDetails: PendingPlayer[] = [];
   const skipped: SkippedLine[] = [];
-  const taken = new Set(existingNames.map((n) => normalise(n)));
-  const knownByName = new Map(known.map((p) => [normalise(p.name), p]));
+  const inToday = new Set(todayNames.map((n) => normalise(n)));
+  const inThisList = new Set<string>();
 
   for (const rawLine of text.split(/\r?\n/)) {
     const original = rawLine.trim();
@@ -103,83 +125,86 @@ export function parsePlayerList(
 
     // The first field is always the name, even when it is empty.
     const fields = cleaned.split(",").map((f) => f.trim());
-    const name = fields[0] ?? "";
+    const typedName = (fields[0] ?? "").replace(/\s+/g, " ");
 
-    if (!name) {
+    if (!typedName) {
       skipped.push({ line: original, reason: "no name found" });
       continue;
     }
 
-    if (taken.has(normalise(name))) {
-      skipped.push({ line: original, reason: "already in today's list" });
-      continue;
-    }
-
     let rest = fields.slice(1).filter((f) => f.length > 0);
-    let skill = DEFAULT_SKILL;
-    let skillDefaulted = true;
-    let badSkill = false;
+    let skill: number | null = null;
 
     // A purely numeric second field is the skill.
     if (rest.length && /^-?\d+([.,]\d+)?$/.test(rest[0]!)) {
       const value = Number(rest[0]!.replace(",", "."));
-      if (Number.isInteger(value) && value >= 1 && value <= 5) {
-        skill = value;
-        skillDefaulted = false;
-      } else {
-        badSkill = true;
+      if (!Number.isInteger(value) || value < 1 || value > 5) {
+        skipped.push({ line: original, reason: "skill must be 1 to 5" });
+        continue;
       }
+      skill = value;
       rest = rest.slice(1);
     }
 
-    if (badSkill) {
-      skipped.push({ line: original, reason: "skill must be 1 to 5" });
-      continue;
-    }
-
     const positions: Position[] = [];
-    let badPosition: string | null = null;
+    let badPosition = false;
     for (const field of rest) {
       const match = POSITION_WORDS[normalise(field)];
       if (!match) {
-        badPosition = field;
+        badPosition = true;
         break;
       }
       if (!positions.includes(match)) positions.push(match);
     }
-
     if (badPosition) {
       skipped.push({ line: original, reason: "position not recognised" });
       continue;
     }
 
-    // Fill gaps from the saved roster before falling back to the defaults.
-    const saved = knownByName.get(normalise(name));
-    let fromRoster = false;
-    if (saved && skillDefaulted) {
-      skill = saved.skill;
-      skillDefaulted = false;
-      fromRoster = true;
-    }
-    if (saved && positions.length === 0) {
-      positions.push(...saved.positions);
-      fromRoster = true;
+    const match = findSaved(typedName, saved);
+    if (match.kind === "ambiguous") {
+      skipped.push({
+        line: original,
+        reason: `more than one saved ${typedName}, add the last name`,
+      });
+      continue;
     }
 
-    const positionDefaulted = positions.length === 0;
-    if (positionDefaulted) positions.push(DEFAULT_POSITION);
+    // Use the saved spelling for a known player, so "marlo" shows as "Marlo Silva".
+    const resolvedName =
+      match.kind === "found" ? fullName(match.player) : typedName;
+    const key = normalise(resolvedName);
 
-    taken.add(normalise(name));
-    players.push({
-      // Use the saved spelling when the player is known, so "marlo" shows as "Marlo".
-      name: saved ? saved.name : name,
-      skill,
-      positions,
-      skillDefaulted,
-      positionDefaulted,
-      fromRoster,
-    });
+    if (inToday.has(key) || inToday.has(normalise(typedName))) {
+      skipped.push({ line: original, reason: "already in today's list" });
+      continue;
+    }
+    if (inThisList.has(key)) {
+      skipped.push({ line: original, reason: "listed twice" });
+      continue;
+    }
+    inThisList.add(key);
+
+    if (match.kind === "found") {
+      const known = match.player;
+      players.push({
+        firstName: known.firstName,
+        lastName: known.lastName,
+        skill: skill ?? known.skill,
+        positions: positions.length ? positions : [...known.positions],
+        fromRoster: skill === null || positions.length === 0,
+        isNew: false,
+      });
+      continue;
+    }
+
+    const { firstName, lastName } = splitName(typedName);
+    if (skill !== null && positions.length > 0) {
+      players.push({ firstName, lastName, skill, positions, fromRoster: false, isNew: true });
+    } else {
+      needsDetails.push({ line: original, firstName, lastName, skill, positions });
+    }
   }
 
-  return { players, skipped };
+  return { players, needsDetails, skipped };
 }
