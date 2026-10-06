@@ -14,6 +14,7 @@ import {
 import {
   extractNames,
   parsePlayerList,
+  type ParsedPlayer,
   type ParseResult,
   type PendingPlayer,
 } from "./lib/parse";
@@ -549,6 +550,82 @@ export default function App() {
       await refreshAdmin(adminPw);
     } catch (err) {
       setDbError(friendlyError(err));
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+  // Players tab: paste a whole list into the database
+  // ---------------------------------------------------------------------------
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkPreview, setBulkPreview] = useState<ParseResult | null>(null);
+  const [bulkPending, setBulkPending] = useState<PendingPlayer[]>([]);
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  const [bulkSaving, setBulkSaving] = useState(false);
+
+  const samePositions = (a: Position[], b: Position[]) =>
+    a.length === b.length && [...a].sort().join() === [...b].sort().join();
+
+  /** A known player whose pasted line says nothing different from what is saved. */
+  const unchangedFromSaved = (p: ParsedPlayer) => {
+    if (p.isNew || !p.dbId) return false;
+    const saved = dbPlayers.find((d) => d.id === p.dbId);
+    return !!saved && saved.skill === p.skill && samePositions(saved.positions, p.positions);
+  };
+
+  const bulkChanges = bulkPreview ? bulkPreview.players.filter((p) => !unchangedFromSaved(p)) : [];
+  const bulkUnchanged = bulkPreview ? bulkPreview.players.filter(unchangedFromSaved) : [];
+  const bulkIncomplete = bulkPending.filter(
+    (p) => p.skill === null || p.positions.length === 0,
+  ).length;
+  const bulkCount = bulkChanges.length + bulkPending.length;
+
+  const bulkRead = () => {
+    // The whole database is already loaded while unlocked, so match against it directly.
+    const result = parsePlayerList(bulkText, [], dbPlayers);
+    setBulkPreview(result);
+    setBulkPending(result.needsDetails);
+    setBulkNote(null);
+  };
+
+  const updateBulkPending = (i: number, patch: Partial<PendingPlayer>) =>
+    setBulkPending((prev) => prev.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+
+  const bulkSave = async () => {
+    if (!adminPw || !bulkPreview || bulkIncomplete > 0 || bulkCount === 0) return;
+    const toSave: PlayerDetails[] = [
+      ...bulkChanges.map((p) => ({
+        firstName: p.firstName,
+        lastName: p.lastName,
+        skill: p.skill,
+        positions: p.positions,
+      })),
+      ...bulkPending.map((p) => ({
+        firstName: p.firstName,
+        lastName: p.lastName,
+        skill: p.skill as number,
+        positions: p.positions,
+      })),
+    ];
+    const added = bulkChanges.filter((p) => p.isNew).length + bulkPending.length;
+    const updated = toSave.length - added;
+    setBulkSaving(true);
+    try {
+      // The database accepts up to 60 players per call, so send longer lists in batches.
+      for (let i = 0; i < toSave.length; i += 60) {
+        await savePlayers(adminPw, toSave.slice(i, i + 60));
+      }
+      await refreshAdmin(adminPw);
+      setBulkNote(
+        `Saved ${toSave.length} player${toSave.length === 1 ? "" : "s"}: ${added} added, ${updated} updated.`,
+      );
+      if (!bulkPreview.skipped.length) setBulkText("");
+      setBulkPreview(null);
+      setBulkPending([]);
+    } catch (err) {
+      setBulkNote(friendlyError(err));
+    } finally {
+      setBulkSaving(false);
     }
   };
 
@@ -1246,6 +1323,178 @@ export default function App() {
                   </div>
                 </form>
               </Card>
+
+              <div className="mt-6">
+                <SectionTitle>Paste a list into the database</SectionTitle>
+                <Card>
+                  {!bulkOpen ? (
+                    <button
+                      type="button"
+                      onClick={() => setBulkOpen(true)}
+                      className={`${ghostBtn} w-full`}
+                      style={{ borderColor: COLUMBIA, color: NAVY }}
+                    >
+                      Paste a list of players
+                    </button>
+                  ) : (
+                    <>
+                      <p className="text-xs font-semibold" style={{ color: BLUE }}>
+                        One player per line: name, skill, positions. New names are added.
+                        Names already in the database are updated if their skill or positions
+                        differ, and keep their games history.
+                      </p>
+                      <textarea
+                        value={bulkText}
+                        onChange={(e) => setBulkText(e.target.value)}
+                        placeholder={"Gabriel Pecora, 4, MID, ATT\nJohn Smith, 3, GK"}
+                        rows={8}
+                        className="mt-2 w-full rounded-xl border-2 p-3 font-mono text-sm outline-none focus:border-[#1d4f91]"
+                        style={{ borderColor: COLUMBIA_SOFT }}
+                      />
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={bulkRead}
+                          disabled={!bulkText.trim()}
+                          className="h-11 rounded-xl border-2 bg-white text-sm font-bold disabled:opacity-50"
+                          style={{ borderColor: BLUE, color: BLUE }}
+                        >
+                          Read list
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBulkOpen(false);
+                            setBulkPreview(null);
+                            setBulkPending([]);
+                            setBulkNote(null);
+                          }}
+                          className="h-11 rounded-xl border-2 bg-white text-sm font-semibold"
+                          style={{ borderColor: COLUMBIA, color: NAVY }}
+                        >
+                          Close
+                        </button>
+                      </div>
+
+                      {bulkNote && (
+                        <p className="mt-2 text-sm font-bold" style={{ color: BLUE }}>
+                          {bulkNote}
+                        </p>
+                      )}
+
+                      {bulkPreview && (
+                        <div className="mt-3">
+                          {bulkChanges.map((p, i) => (
+                            <div
+                              key={`bulk-${i}`}
+                              className="mt-2 flex items-center gap-3 rounded-xl border-2 bg-white p-2"
+                              style={{ borderColor: COLUMBIA_SOFT }}
+                            >
+                              <SkillBadge value={p.skill} small />
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
+                                  {fullName(p)}
+                                </p>
+                                <PosTags positions={p.positions} />
+                              </div>
+                              <span
+                                className="shrink-0 rounded-md px-2 py-0.5 text-xs font-bold"
+                                style={p.isNew ? newTagStyle : dbTagStyle}
+                              >
+                                {p.isNew ? "add" : "update"}
+                              </span>
+                            </div>
+                          ))}
+
+                          {bulkPending.length > 0 && (
+                            <div
+                              className="mt-3 rounded-xl border-2 p-3"
+                              style={{ borderColor: GOLD, backgroundColor: "#fdf8ea" }}
+                            >
+                              <p className="text-sm font-bold" style={{ color: NAVY }}>
+                                New players missing details ({bulkPending.length})
+                              </p>
+                              <p className="text-xs text-slate-600">
+                                Set a skill and positions for each before saving.
+                              </p>
+                              {bulkPending.map((p, i) => (
+                                <div
+                                  key={`bulk-pending-${i}`}
+                                  className="mt-3 rounded-xl border-2 bg-white p-3"
+                                  style={{ borderColor: COLUMBIA_SOFT }}
+                                >
+                                  <p className="text-sm font-bold" style={{ color: NAVY }}>
+                                    {fullName(p)}
+                                  </p>
+                                  <FieldLabel>Skill level</FieldLabel>
+                                  <SkillPicker
+                                    value={p.skill}
+                                    onChange={(n) => updateBulkPending(i, { skill: n })}
+                                  />
+                                  <FieldLabel>Positions</FieldLabel>
+                                  <PositionPicker
+                                    value={p.positions}
+                                    onChange={(next) => updateBulkPending(i, { positions: next })}
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {bulkUnchanged.length > 0 && (
+                            <p className="mt-3 text-xs text-slate-600">
+                              Already in the database, nothing to change:{" "}
+                              {bulkUnchanged.map(fullName).join(", ")}.
+                            </p>
+                          )}
+
+                          {bulkPreview.skipped.length > 0 && (
+                            <div
+                              className="mt-3 rounded-xl border-2 bg-white p-3"
+                              style={{ borderColor: COLUMBIA }}
+                            >
+                              <p className="text-sm font-bold" style={{ color: NAVY }}>
+                                Skipped {bulkPreview.skipped.length} line
+                                {bulkPreview.skipped.length === 1 ? "" : "s"}
+                              </p>
+                              {bulkPreview.skipped.map((s, i) => (
+                                <div key={i} className="mt-2 text-xs">
+                                  <p className="font-mono text-slate-700">{s.line}</p>
+                                  <p className="font-semibold" style={{ color: "#8a6d1f" }}>
+                                    {s.reason}
+                                  </p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => void bulkSave()}
+                            disabled={bulkCount === 0 || bulkIncomplete > 0 || bulkSaving}
+                            className="mt-3 h-11 w-full rounded-xl text-sm font-bold text-white disabled:bg-slate-300 disabled:text-slate-500"
+                            style={
+                              bulkCount > 0 && bulkIncomplete === 0 && !bulkSaving
+                                ? { backgroundColor: BLUE }
+                                : undefined
+                            }
+                          >
+                            {bulkSaving
+                              ? "Saving..."
+                              : bulkIncomplete > 0
+                                ? `Set details for ${bulkIncomplete} new player${
+                                    bulkIncomplete === 1 ? "" : "s"
+                                  } first`
+                                : bulkCount === 0
+                                  ? "Nothing to save"
+                                  : `Save ${bulkCount} player${bulkCount === 1 ? "" : "s"} to the database`}
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </Card>
+              </div>
 
               <div className="mt-6 mb-2 flex items-center justify-between gap-2">
                 <SectionTitle>Players ({dbPlayers.length})</SectionTitle>
