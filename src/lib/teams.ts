@@ -19,6 +19,8 @@ export type Player = {
   name: string;
   skill: number;
   positions: Position[];
+  /** Set when this player is in the saved database; absent for new players. */
+  dbId?: string;
 };
 
 export type Team = {

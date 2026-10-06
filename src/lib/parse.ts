@@ -3,7 +3,7 @@ import {
   findSaved,
   fullName,
   splitName,
-  type SavedPlayer,
+  type KnownPlayer,
 } from "./roster";
 
 /** A player read from the list with everything known: ready to add. */
@@ -16,6 +16,8 @@ export type ParsedPlayer = {
   fromRoster: boolean;
   /** True when this name is not in the saved database yet. */
   isNew: boolean;
+  /** The database id for a known player; null for a new one. */
+  dbId: string | null;
 };
 
 /**
@@ -105,10 +107,25 @@ function stripLeadingClutter(line: string) {
  *
  * `todayNames` are the players already in today's list, which get skipped.
  */
+/**
+ * Just the names from a pasted list, cleaned the same way the parser cleans
+ * them, so they can be looked up in the database before parsing.
+ */
+export function extractNames(text: string): string[] {
+  const names: string[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    if (!rawLine.trim()) continue;
+    const cleaned = stripLeadingClutter(rawLine);
+    const name = (cleaned.split(",")[0] ?? "").trim().replace(/\s+/g, " ");
+    if (name) names.push(name);
+  }
+  return names;
+}
+
 export function parsePlayerList(
   text: string,
   todayNames: string[] = [],
-  saved: SavedPlayer[] = [],
+  saved: KnownPlayer[] = [],
 ): ParseResult {
   const players: ParsedPlayer[] = [];
   const needsDetails: PendingPlayer[] = [];
@@ -194,13 +211,22 @@ export function parsePlayerList(
         positions: positions.length ? positions : [...known.positions],
         fromRoster: skill === null || positions.length === 0,
         isNew: false,
+        dbId: known.id,
       });
       continue;
     }
 
     const { firstName, lastName } = splitName(typedName);
     if (skill !== null && positions.length > 0) {
-      players.push({ firstName, lastName, skill, positions, fromRoster: false, isNew: true });
+      players.push({
+        firstName,
+        lastName,
+        skill,
+        positions,
+        fromRoster: false,
+        isNew: true,
+        dbId: null,
+      });
     } else {
       needsDetails.push({ line: original, firstName, lastName, skill, positions });
     }

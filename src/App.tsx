@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import {
   EXAMPLE_PLAYERS,
   POSITIONS,
@@ -12,23 +12,28 @@ import {
   type Split,
 } from "./lib/teams";
 import {
+  extractNames,
   parsePlayerList,
   type ParseResult,
   type PendingPlayer,
 } from "./lib/parse";
 import {
+  dbConfigured,
   findSaved,
   friendlyError,
   fullName,
-  loadRoster,
+  listGames,
+  listPlayers,
+  lookupPlayers,
   nameKey,
-  normaliseSquad,
-  recordPractice,
-  removeFromRoster,
-  rosterConfigured,
-  saveToRoster,
+  recordGame,
+  removeGame,
+  removePlayer,
+  savePlayers,
   splitName,
   updatePlayer,
+  verifyPassword,
+  type GameSummary,
   type PlayerDetails,
   type SavedPlayer,
 } from "./lib/roster";
@@ -39,40 +44,39 @@ const COLUMBIA = "#b9d9eb";
 const COLUMBIA_SOFT = "#e2eff8";
 const GOLD = "#c9a43c";
 
-const SQUAD_STORAGE_KEY = "soccer-selector-squad";
-
-/** Shared button styles, so the whole app stays on the club palette. */
 const primaryBtn =
   "h-12 w-full rounded-xl text-base font-bold text-white shadow-sm transition disabled:bg-slate-300 disabled:text-slate-500";
-const ghostBtn =
-  "h-12 rounded-xl border-2 bg-white text-sm font-semibold transition";
+const ghostBtn = "h-12 rounded-xl border-2 bg-white text-sm font-semibold transition";
 
 const selectedStyle = { borderColor: BLUE, backgroundColor: BLUE, color: "#fff" };
-const unselectedStyle = {
-  borderColor: COLUMBIA_SOFT,
-  backgroundColor: "#fff",
-  color: NAVY,
-};
+const unselectedStyle = { borderColor: COLUMBIA_SOFT, backgroundColor: "#fff", color: NAVY };
+const newTagStyle = { backgroundColor: "#f5ead0", color: "#7d6218" };
+const dbTagStyle = { backgroundColor: COLUMBIA_SOFT, color: BLUE };
 
 type Tab = "teams" | "players";
 
-function readStoredSquad(): string {
-  try {
-    return localStorage.getItem(SQUAD_STORAGE_KEY) ?? "";
-  } catch {
-    return "";
-  }
+/** "2026-10-06T19:00" for the date-time input, in local time. */
+function localNow(): string {
+  const d = new Date();
+  d.setSeconds(0, 0);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+}
+
+function formatGameTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function PosTags({ positions }: { positions: Position[] }) {
   return (
     <div className="mt-1 flex flex-wrap gap-1">
       {positions.map((p) => (
-        <span
-          key={p}
-          className="rounded-md px-1.5 py-0.5 text-xs font-bold"
-          style={{ backgroundColor: COLUMBIA_SOFT, color: BLUE }}
-        >
+        <span key={p} className="rounded-md px-1.5 py-0.5 text-xs font-bold" style={dbTagStyle}>
           {POSITION_SHORT[p]}
         </span>
       ))}
@@ -93,13 +97,18 @@ function SkillBadge({ value, small }: { value: number; small?: boolean }) {
   );
 }
 
-function SkillPicker({
-  value,
-  onChange,
-}: {
-  value: number | null;
-  onChange: (n: number) => void;
-}) {
+function Tag({ isNew }: { isNew: boolean }) {
+  return (
+    <span
+      className="shrink-0 rounded-md px-2 py-0.5 text-xs font-bold"
+      style={isNew ? newTagStyle : dbTagStyle}
+    >
+      {isNew ? "new" : "in database"}
+    </span>
+  );
+}
+
+function SkillPicker({ value, onChange }: { value: number | null; onChange: (n: number) => void }) {
   return (
     <div className="grid grid-cols-5 gap-2">
       {[1, 2, 3, 4, 5].map((n) => (
@@ -157,10 +166,7 @@ function FieldLabel({ children, htmlFor }: { children: ReactNode; htmlFor?: stri
 
 function Card({ children }: { children: ReactNode }) {
   return (
-    <div
-      className="rounded-2xl border-2 bg-white p-4 shadow-sm"
-      style={{ borderColor: COLUMBIA }}
-    >
+    <div className="rounded-2xl border-2 bg-white p-4 shadow-sm" style={{ borderColor: COLUMBIA }}>
       {children}
     </div>
   );
@@ -174,59 +180,59 @@ function SectionTitle({ children }: { children: ReactNode }) {
   );
 }
 
+const inputClass =
+  "h-12 w-full rounded-xl border-2 px-3 text-base outline-none focus:border-[#1d4f91]";
+
 export default function App() {
   const [tab, setTab] = useState<Tab>("teams");
 
   // ---------------------------------------------------------------------------
-  // Squad and the saved player database (Supabase)
+  // Database password. Held in memory only: gone on refresh or Lock.
   // ---------------------------------------------------------------------------
-  const [squad, setSquad] = useState(readStoredSquad);
-  const [squadInput, setSquadInput] = useState(readStoredSquad);
-  const [roster, setRoster] = useState<SavedPlayer[]>([]);
-  const [rosterLoading, setRosterLoading] = useState(false);
-  const [rosterError, setRosterError] = useState<string | null>(null);
-  const dbReady = rosterConfigured && squad.length > 0;
+  const [adminPw, setAdminPw] = useState<string | null>(null);
+  const [pwInput, setPwInput] = useState("");
+  const [pwError, setPwError] = useState<string | null>(null);
+  const [pwBusy, setPwBusy] = useState(false);
+  const [dbPlayers, setDbPlayers] = useState<SavedPlayer[]>([]);
+  const [games, setGames] = useState<GameSummary[]>([]);
+  const [dbError, setDbError] = useState<string | null>(null);
 
-  const refreshRoster = async (code: string) => {
-    if (!rosterConfigured || !code) {
-      setRoster([]);
-      return;
-    }
-    setRosterLoading(true);
+  const refreshAdmin = async (pw: string) => {
     try {
-      setRoster(await loadRoster(code));
-      setRosterError(null);
+      const [p, g] = await Promise.all([listPlayers(pw), listGames(pw)]);
+      setDbPlayers(p);
+      setGames(g);
+      setDbError(null);
     } catch (err) {
-      setRosterError(friendlyError(err));
+      setDbError(friendlyError(err));
+    }
+  };
+
+  const unlock = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!pwInput) return;
+    setPwBusy(true);
+    setPwError(null);
+    try {
+      if (await verifyPassword(pwInput)) {
+        setAdminPw(pwInput);
+        setPwInput("");
+        await refreshAdmin(pwInput);
+      } else {
+        setPwError("That password is not right.");
+      }
+    } catch (err) {
+      setPwError(friendlyError(err));
     } finally {
-      setRosterLoading(false);
+      setPwBusy(false);
     }
   };
 
-  useEffect(() => {
-    void refreshRoster(squad);
-  }, [squad]);
-
-  const openSquad = () => {
-    const code = normaliseSquad(squadInput);
-    setSquadInput(code);
-    setSquad(code);
-    try {
-      localStorage.setItem(SQUAD_STORAGE_KEY, code);
-    } catch {
-      /* storage blocked; the squad still works for this visit */
-    }
-  };
-
-  /** Save players to the database in the background. Today's list works even if this fails. */
-  const remember = async (details: PlayerDetails[]) => {
-    if (!dbReady || !details.length) return;
-    try {
-      await saveToRoster(squad, details);
-      await refreshRoster(squad);
-    } catch (err) {
-      setRosterError(friendlyError(err));
-    }
+  const lock = () => {
+    setAdminPw(null);
+    setDbPlayers([]);
+    setGames([]);
+    resetForm();
   };
 
   // ---------------------------------------------------------------------------
@@ -237,37 +243,40 @@ export default function App() {
   const [split, setSplit] = useState<Split | null>(null);
   const [reshuffleNote, setReshuffleNote] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
-  const [practiceNote, setPracticeNote] = useState<string | null>(null);
+  const [gameAt, setGameAt] = useState(localNow);
+  const [recordNote, setRecordNote] = useState<string | null>(null);
   const [recordedFor, setRecordedFor] = useState<string | null>(null);
+  const [recordBusy, setRecordBusy] = useState(false);
 
-  const todaySignature = players
+  const todaySignature = `${gameAt}|${players
     .map((p) => nameKey(p.name))
     .sort()
-    .join("|");
+    .join(",")}`;
   const alreadyRecorded = recordedFor === todaySignature;
   const canMake = players.length >= teamCount * 2;
+  const savedToday = players.filter((p) => p.dbId);
+  const newToday = players.filter((p) => !p.dbId);
 
-  const inToday = (name: string) =>
-    players.some((p) => nameKey(p.name) === nameKey(name));
+  const inToday = (name: string) => players.some((p) => nameKey(p.name) === nameKey(name));
 
-  const addToToday = (list: { name: string; skill: number; positions: Position[] }[]) => {
+  const addToToday = (list: Omit<Player, "id">[]) => {
     setPlayers((prev) => {
       const next = [...prev];
       for (const p of list) {
         if (next.some((x) => nameKey(x.name) === nameKey(p.name))) continue;
-        next.push({ id: newId(), name: p.name, skill: p.skill, positions: [...p.positions] });
+        next.push({ ...p, id: newId(), positions: [...p.positions] });
       }
       return next;
     });
     setSplit(null);
-    setPracticeNote(null);
+    setRecordNote(null);
   };
 
   const loadExample = () => {
     setPlayers(EXAMPLE_PLAYERS.map((p) => ({ ...p, id: newId() })));
     setSplit(null);
     setConfirmClear(false);
-    setPracticeNote(null);
+    setRecordNote(null);
   };
 
   const clearAll = () => {
@@ -275,7 +284,7 @@ export default function App() {
     setSplit(null);
     setConfirmClear(false);
     setReshuffleNote(null);
-    setPracticeNote(null);
+    setRecordNote(null);
   };
 
   const run = () => {
@@ -285,21 +294,27 @@ export default function App() {
   };
 
   const record = async () => {
-    if (!dbReady || !players.length) return;
-    const names = players.map((p) => p.name);
+    if (!adminPw || !savedToday.length) return;
+    setRecordBusy(true);
     try {
-      const counted = await recordPractice(squad, names);
-      const notSaved = names.length - counted;
+      const counted = await recordGame(
+        adminPw,
+        new Date(gameAt),
+        savedToday.map((p) => p.dbId!),
+      );
       setRecordedFor(todaySignature);
-      setPracticeNote(
-        `Practice recorded for ${counted} player${counted === 1 ? "" : "s"}.` +
-          (notSaved
-            ? ` ${notSaved} ${notSaved === 1 ? "is" : "are"} not in the saved database, so not counted.`
+      setRecordNote(
+        `Game on ${formatGameTime(new Date(gameAt).toISOString())} recorded. ` +
+          `${counted} player${counted === 1 ? "" : "s"} counted.` +
+          (newToday.length
+            ? ` ${newToday.length} new player${newToday.length === 1 ? " was" : "s were"} not counted, since they are not in the database yet.`
             : ""),
       );
-      await refreshRoster(squad);
+      await refreshAdmin(adminPw);
     } catch (err) {
-      setPracticeNote(friendlyError(err));
+      setRecordNote(friendlyError(err));
+    } finally {
+      setRecordBusy(false);
     }
   };
 
@@ -310,46 +325,66 @@ export default function App() {
   const [quickSkill, setQuickSkill] = useState<number | null>(null);
   const [quickPositions, setQuickPositions] = useState<Position[]>([]);
   const [quickError, setQuickError] = useState<string | null>(null);
+  const [quickBusy, setQuickBusy] = useState(false);
+  /** Set when the typed name was looked up and is not in the database. */
+  const [quickNewFor, setQuickNewFor] = useState<string | null>(null);
 
   const quickTyped = quickName.trim().replace(/\s+/g, " ");
-  const quickMatch = quickTyped ? findSaved(quickTyped, roster) : null;
-  const quickIsNew = quickTyped.length > 0 && quickMatch?.kind === "none";
+  const quickIsNew = quickNewFor !== null && nameKey(quickNewFor) === nameKey(quickTyped);
 
   const resetQuick = () => {
     setQuickName("");
     setQuickSkill(null);
     setQuickPositions([]);
     setQuickError(null);
+    setQuickNewFor(null);
   };
 
-  const submitQuick = (e: FormEvent) => {
+  const submitQuick = async (e: FormEvent) => {
     e.preventDefault();
-    if (!quickTyped || !quickMatch) return setQuickError("Type a name");
+    if (!quickTyped) return setQuickError("Type a name");
 
-    if (quickMatch.kind === "ambiguous") {
-      return setQuickError(
-        `More than one ${quickTyped} is saved: ${quickMatch.candidates
-          .map(fullName)
-          .join(", ")}. Type the last name too.`,
-      );
-    }
-
-    if (quickMatch.kind === "found") {
-      const known = quickMatch.player;
-      const name = fullName(known);
-      if (inToday(name)) return setQuickError(`${name} is already in today's list`);
-      addToToday([{ name, skill: known.skill, positions: known.positions }]);
+    // Already confirmed as new: add with today's details, not saved.
+    if (quickIsNew) {
+      if (inToday(quickTyped)) return setQuickError(`${quickTyped} is already in today's list`);
+      if (quickSkill === null) return setQuickError("Pick a skill level for today");
+      if (!quickPositions.length) return setQuickError("Pick at least one position for today");
+      addToToday([{ name: quickTyped, skill: quickSkill, positions: quickPositions }]);
       resetQuick();
       return;
     }
 
-    // A new name: skill and positions are required, never defaulted.
-    if (inToday(quickTyped)) return setQuickError(`${quickTyped} is already in today's list`);
-    if (quickSkill === null) return setQuickError("New player: pick a skill level");
-    if (!quickPositions.length) return setQuickError("New player: pick at least one position");
-    addToToday([{ name: quickTyped, skill: quickSkill, positions: quickPositions }]);
-    void remember([{ ...splitName(quickTyped), skill: quickSkill, positions: quickPositions }]);
-    resetQuick();
+    setQuickBusy(true);
+    setQuickError(null);
+    try {
+      const found = dbConfigured ? await lookupPlayers([quickTyped]) : [];
+      const match = findSaved(quickTyped, found);
+      if (match.kind === "ambiguous") {
+        setQuickError(
+          `More than one ${quickTyped} is in the database: ${match.candidates
+            .map(fullName)
+            .join(", ")}. Type the last name too.`,
+        );
+      } else if (match.kind === "found") {
+        const known = match.player;
+        const name = fullName(known);
+        if (inToday(name)) setQuickError(`${name} is already in today's list`);
+        else {
+          addToToday([
+            { name, skill: known.skill, positions: known.positions, dbId: known.id },
+          ]);
+          resetQuick();
+        }
+      } else if (inToday(quickTyped)) {
+        setQuickError(`${quickTyped} is already in today's list`);
+      } else {
+        setQuickNewFor(quickTyped);
+      }
+    } catch (err) {
+      setQuickError(friendlyError(err));
+    } finally {
+      setQuickBusy(false);
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -360,21 +395,30 @@ export default function App() {
   const [preview, setPreview] = useState<ParseResult | null>(null);
   const [pending, setPending] = useState<PendingPlayer[]>([]);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
+  const [pasteBusy, setPasteBusy] = useState(false);
 
   const pendingIncomplete = pending.filter(
     (p) => p.skill === null || p.positions.length === 0,
   ).length;
   const pasteTotal = (preview?.players.length ?? 0) + pending.length;
 
-  const readList = () => {
-    const result = parsePlayerList(
-      pasteText,
-      players.map((p) => p.name),
-      roster,
-    );
-    setPreview(result);
-    setPending(result.needsDetails);
+  const readList = async () => {
+    setPasteBusy(true);
     setPasteNote(null);
+    try {
+      const found = dbConfigured ? await lookupPlayers(extractNames(pasteText)) : [];
+      const result = parsePlayerList(
+        pasteText,
+        players.map((p) => p.name),
+        found,
+      );
+      setPreview(result);
+      setPending(result.needsDetails);
+    } catch (err) {
+      setPasteNote(friendlyError(err));
+    } finally {
+      setPasteBusy(false);
+    }
   };
 
   const updatePending = (i: number, patch: Partial<PendingPlayer>) =>
@@ -382,32 +426,29 @@ export default function App() {
 
   const addFromPreview = () => {
     if (!preview || pendingIncomplete > 0) return;
-    const all: PlayerDetails[] = [
+    const ready: Omit<Player, "id">[] = [
       ...preview.players.map((p) => ({
-        firstName: p.firstName,
-        lastName: p.lastName,
+        name: fullName(p),
         skill: p.skill,
         positions: p.positions,
+        ...(p.dbId ? { dbId: p.dbId } : {}),
       })),
       ...pending.map((p) => ({
-        firstName: p.firstName,
-        lastName: p.lastName,
+        name: fullName(p),
         skill: p.skill as number,
         positions: p.positions,
       })),
     ];
-    if (!all.length) return;
-    addToToday(all.map((p) => ({ name: fullName(p), skill: p.skill, positions: p.positions })));
-    // Saves new players, and updates any known player whose line gave a new skill or position.
-    void remember(all);
+    if (!ready.length) return;
+    addToToday(ready);
     setPreview(null);
     setPending([]);
-    setPasteNote(`Added ${all.length} player${all.length === 1 ? "" : "s"}`);
+    setPasteNote(`Added ${ready.length} player${ready.length === 1 ? "" : "s"}`);
     if (!preview.skipped.length) setPasteText("");
   };
 
   // ---------------------------------------------------------------------------
-  // Players tab: add, edit and remove saved players
+  // Players tab
   // ---------------------------------------------------------------------------
   const [formFirst, setFormFirst] = useState("");
   const [formLast, setFormLast] = useState("");
@@ -416,17 +457,19 @@ export default function App() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSaving, setFormSaving] = useState(false);
-  const [sortBy, setSortBy] = useState<"name" | "practices">("name");
+  const [sortBy, setSortBy] = useState<"name" | "games">("name");
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
+  const [confirmGameId, setConfirmGameId] = useState<string | null>(null);
+  const [savingNewId, setSavingNewId] = useState<string | null>(null);
 
-  const resetForm = () => {
+  function resetForm() {
     setFormFirst("");
     setFormLast("");
     setFormSkill(null);
     setFormPositions([]);
     setEditingId(null);
     setFormError(null);
-  };
+  }
 
   const editPlayer = (p: SavedPlayer) => {
     setEditingId(p.id);
@@ -438,9 +481,9 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const savePlayer = async (e: FormEvent) => {
+  const savePlayerForm = async (e: FormEvent) => {
     e.preventDefault();
-    if (!dbReady) return;
+    if (!adminPw) return;
     if (!formFirst.trim()) return setFormError("First name is required");
     if (formSkill === null) return setFormError("Pick a skill level");
     if (!formPositions.length) return setFormError("Pick at least one position");
@@ -452,9 +495,9 @@ export default function App() {
     };
     setFormSaving(true);
     try {
-      if (editingId) await updatePlayer(editingId, details);
-      else await saveToRoster(squad, [details]);
-      await refreshRoster(squad);
+      if (editingId) await updatePlayer(adminPw, editingId, details);
+      else await savePlayers(adminPw, [details]);
+      await refreshAdmin(adminPw);
       resetForm();
     } catch (err) {
       setFormError(friendlyError(err));
@@ -463,20 +506,55 @@ export default function App() {
     }
   };
 
-  const removeSaved = async (id: string) => {
+  /** "Save later": put a new player from today's list into the database. */
+  const saveNewToday = async (p: Player) => {
+    if (!adminPw) return;
+    setSavingNewId(p.id);
     try {
-      await removeFromRoster(id);
-      setRoster((prev) => prev.filter((p) => p.id !== id));
-      setConfirmRemoveId(null);
-      if (editingId === id) resetForm();
+      await savePlayers(adminPw, [
+        { ...splitName(p.name), skill: p.skill, positions: p.positions },
+      ]);
+      const [saved] = (await lookupPlayers([p.name])).filter(
+        (k) => nameKey(fullName(k)) === nameKey(p.name),
+      );
+      if (saved) {
+        setPlayers((prev) => prev.map((x) => (x.id === p.id ? { ...x, dbId: saved.id } : x)));
+      }
+      await refreshAdmin(adminPw);
     } catch (err) {
-      setRosterError(friendlyError(err));
+      setDbError(friendlyError(err));
+    } finally {
+      setSavingNewId(null);
     }
   };
 
-  const sortedRoster = [...roster].sort((a, b) =>
-    sortBy === "practices"
-      ? b.practices - a.practices || fullName(a).localeCompare(fullName(b))
+  const removeSaved = async (id: string) => {
+    if (!adminPw) return;
+    try {
+      await removePlayer(adminPw, id);
+      setPlayers((prev) => prev.map((x) => (x.dbId === id ? { ...x, dbId: undefined } : x)));
+      setConfirmRemoveId(null);
+      if (editingId === id) resetForm();
+      await refreshAdmin(adminPw);
+    } catch (err) {
+      setDbError(friendlyError(err));
+    }
+  };
+
+  const removeGameEntry = async (id: string) => {
+    if (!adminPw) return;
+    try {
+      await removeGame(adminPw, id);
+      setConfirmGameId(null);
+      await refreshAdmin(adminPw);
+    } catch (err) {
+      setDbError(friendlyError(err));
+    }
+  };
+
+  const sortedDb = [...dbPlayers].sort((a, b) =>
+    sortBy === "games"
+      ? b.gamesPlayed - a.gamesPlayed || fullName(a).localeCompare(fullName(b))
       : fullName(a).localeCompare(fullName(b)),
   );
 
@@ -485,7 +563,6 @@ export default function App() {
   // ---------------------------------------------------------------------------
   return (
     <div className="mx-auto min-h-screen w-full max-w-2xl pb-16">
-      {/* Header */}
       <header
         className="flex items-center gap-4 px-4 py-5 text-white"
         style={{
@@ -512,66 +589,12 @@ export default function App() {
         </div>
       </header>
 
-      {/* Squad code, shared by both tabs */}
-      <section className="px-4 pt-5">
-        {!rosterConfigured ? (
-          <p className="rounded-xl bg-white p-3 text-sm text-slate-600">
-            The saved player database is not set up on this copy of the app. Picking teams still
-            works.
-          </p>
-        ) : (
-          <div className="flex items-end gap-2">
-            <div className="min-w-0 flex-1">
-              <label
-                htmlFor="squad"
-                className="block text-xs font-bold tracking-wide uppercase"
-                style={{ color: BLUE }}
-              >
-                Squad code{squad ? `: ${squad}` : ""}
-              </label>
-              <input
-                id="squad"
-                value={squadInput}
-                onChange={(e) => setSquadInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && squadInput.trim() && openSquad()}
-                placeholder="e.g. cbs-sunday"
-                maxLength={40}
-                className="mt-1 h-11 w-full rounded-xl border-2 bg-white px-3 text-base outline-none focus:border-[#1d4f91]"
-                style={{ borderColor: COLUMBIA_SOFT }}
-              />
-            </div>
-            <button
-              type="button"
-              onClick={openSquad}
-              disabled={!squadInput.trim() || normaliseSquad(squadInput) === squad}
-              className="h-11 rounded-xl px-4 text-sm font-bold text-white disabled:bg-slate-300"
-              style={
-                squadInput.trim() && normaliseSquad(squadInput) !== squad
-                  ? { backgroundColor: BLUE }
-                  : undefined
-              }
-            >
-              Open
-            </button>
-          </div>
-        )}
-        {rosterConfigured && (
-          <p className="mt-1 text-xs text-slate-500">
-            Everyone using the same code shares the same saved players. It is not a password:
-            anyone who knows the code can edit the squad.
-          </p>
-        )}
-        {rosterError && (
-          <p className="mt-2 text-sm font-semibold text-red-700">{rosterError}</p>
-        )}
-      </section>
-
       {/* Tabs */}
       <nav className="mx-4 mt-4 grid grid-cols-2 gap-1 rounded-2xl bg-white p-1 shadow-sm">
         {(
           [
             ["teams", "Pick teams"],
-            ["players", `Players${dbReady ? ` (${roster.length})` : ""}`],
+            ["players", adminPw ? `Players (${dbPlayers.length})` : "Players 🔒"],
           ] as [Tab, string][]
         ).map(([key, label]) => (
           <button
@@ -592,11 +615,11 @@ export default function App() {
 
       {tab === "teams" ? (
         <>
-          {/* Add players */}
+          {/* Who is playing */}
           <section className="px-4 pt-6">
             <SectionTitle>Who is playing?</SectionTitle>
             <Card>
-              <form onSubmit={submitQuick}>
+              <form onSubmit={(e) => void submitQuick(e)}>
                 <FieldLabel htmlFor="quick-name">Add a player by name</FieldLabel>
                 <input
                   id="quick-name"
@@ -608,23 +631,9 @@ export default function App() {
                   placeholder="e.g. Marlo Silva"
                   maxLength={61}
                   autoComplete="off"
-                  className="h-12 w-full rounded-xl border-2 px-3 text-base outline-none focus:border-[#1d4f91]"
+                  className={inputClass}
                   style={{ borderColor: COLUMBIA_SOFT }}
                 />
-
-                {quickMatch?.kind === "found" && (
-                  <p className="mt-2 text-sm" style={{ color: BLUE }}>
-                    Found <strong>{fullName(quickMatch.player)}</strong>, skill{" "}
-                    {quickMatch.player.skill},{" "}
-                    {quickMatch.player.positions.map((p) => POSITION_SHORT[p]).join(", ")}
-                  </p>
-                )}
-                {quickMatch?.kind === "ambiguous" && (
-                  <p className="mt-2 text-sm text-amber-800">
-                    More than one {quickTyped}:{" "}
-                    {quickMatch.candidates.map(fullName).join(", ")}. Add the last name.
-                  </p>
-                )}
 
                 {quickIsNew && (
                   <div
@@ -632,8 +641,11 @@ export default function App() {
                     style={{ borderColor: GOLD, backgroundColor: "#fdf8ea" }}
                   >
                     <p className="text-sm font-bold" style={{ color: NAVY }}>
-                      New player. Set their skill and positions
-                      {dbReady ? " and they'll be saved for next time." : "."}
+                      {quickTyped} is a new player, not in the database.
+                    </p>
+                    <p className="text-xs text-slate-600">
+                      Set a skill and position for today. They will not be saved: someone with
+                      the database password can add them on the Players tab.
                     </p>
                     <FieldLabel>Skill level</FieldLabel>
                     <SkillPicker value={quickSkill} onChange={setQuickSkill} />
@@ -648,11 +660,11 @@ export default function App() {
 
                 <button
                   type="submit"
-                  disabled={!quickTyped}
+                  disabled={!quickTyped || quickBusy}
                   className={`mt-3 ${primaryBtn}`}
-                  style={quickTyped ? { backgroundColor: BLUE } : undefined}
+                  style={quickTyped && !quickBusy ? { backgroundColor: BLUE } : undefined}
                 >
-                  Add to today
+                  {quickBusy ? "Looking up..." : quickIsNew ? "Add for today" : "Add to today"}
                 </button>
               </form>
 
@@ -681,8 +693,8 @@ export default function App() {
                   style={{ borderColor: COLUMBIA, backgroundColor: "#f6fbfe" }}
                 >
                   <p className="text-xs font-semibold" style={{ color: BLUE }}>
-                    One player per line. Saved players only need a name. New players need
-                    a skill and positions, or you'll be asked for them.
+                    One player per line. Players in the database only need a name. New players
+                    need a skill and position for today.
                   </p>
                   <textarea
                     value={pasteText}
@@ -694,11 +706,12 @@ export default function App() {
                   />
                   <button
                     type="button"
-                    onClick={readList}
-                    className="h-11 w-full rounded-xl border-2 bg-white text-sm font-bold"
+                    onClick={() => void readList()}
+                    disabled={pasteBusy || !pasteText.trim()}
+                    className="h-11 w-full rounded-xl border-2 bg-white text-sm font-bold disabled:opacity-50"
                     style={{ borderColor: BLUE, color: BLUE }}
                   >
-                    Read list
+                    {pasteBusy ? "Checking the database..." : "Read list"}
                   </button>
 
                   {pasteNote && (
@@ -722,16 +735,7 @@ export default function App() {
                             </p>
                             <PosTags positions={p.positions} />
                           </div>
-                          <span
-                            className="shrink-0 rounded-md px-2 py-0.5 text-xs font-bold"
-                            style={
-                              p.isNew
-                                ? { backgroundColor: "#f5ead0", color: "#7d6218" }
-                                : { backgroundColor: COLUMBIA_SOFT, color: BLUE }
-                            }
-                          >
-                            {p.isNew ? "new" : p.fromRoster ? "from database" : "saved"}
-                          </span>
+                          <Tag isNew={p.isNew} />
                         </div>
                       ))}
 
@@ -741,11 +745,11 @@ export default function App() {
                           style={{ borderColor: GOLD, backgroundColor: "#fdf8ea" }}
                         >
                           <p className="text-sm font-bold" style={{ color: NAVY }}>
-                            New players: needs details ({pending.length})
+                            New players, not in the database ({pending.length})
                           </p>
                           <p className="text-xs text-slate-600">
-                            These names are not saved yet. Set each one's skill and positions
-                            to add them.
+                            Set each one's skill and positions for today. They will not be
+                            saved; someone with the database password can add them later.
                           </p>
                           {pending.map((p, i) => (
                             <div
@@ -773,8 +777,8 @@ export default function App() {
 
                       {preview.skipped.length > 0 && (
                         <div
-                          className="mt-3 rounded-xl border-2 p-3"
-                          style={{ borderColor: COLUMBIA, backgroundColor: "#ffffff" }}
+                          className="mt-3 rounded-xl border-2 bg-white p-3"
+                          style={{ borderColor: COLUMBIA }}
                         >
                           <p className="text-sm font-bold" style={{ color: NAVY }}>
                             Skipped {preview.skipped.length} line
@@ -881,15 +885,16 @@ export default function App() {
                       </p>
                       <PosTags positions={p.positions} />
                     </div>
+                    {dbConfigured && <Tag isNew={!p.dbId} />}
                     <button
                       type="button"
                       onClick={() => {
                         setPlayers((prev) => prev.filter((x) => x.id !== p.id));
                         setSplit(null);
-                        setPracticeNote(null);
+                        setRecordNote(null);
                       }}
                       aria-label={`Remove ${p.name} from today`}
-                      className="h-11 w-11 rounded-xl border-2 text-lg font-bold"
+                      className="h-11 w-11 shrink-0 rounded-xl border-2 text-lg font-bold"
                       style={{ borderColor: COLUMBIA_SOFT, color: BLUE }}
                     >
                       ×
@@ -923,7 +928,6 @@ export default function App() {
                   </button>
                 ))}
               </div>
-
               <button
                 type="button"
                 onClick={run}
@@ -948,7 +952,7 @@ export default function App() {
                 <SectionTitle>Teams</SectionTitle>
                 <span
                   className="rounded-lg px-2 py-1 text-sm font-bold"
-                  style={{ backgroundColor: "#f5ead0", color: "#7d6218" }}
+                  style={newTagStyle}
                 >
                   Skill gap: {skillGap(split.teams)}
                 </span>
@@ -1018,27 +1022,71 @@ export default function App() {
                 Reshuffle
               </button>
 
-              {dbReady && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void record()}
-                    disabled={alreadyRecorded}
-                    className={`mt-2 ${primaryBtn}`}
-                    style={alreadyRecorded ? undefined : { backgroundColor: NAVY }}
-                  >
-                    {alreadyRecorded ? "Practice recorded" : "Record practice"}
-                  </button>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Adds one practice to everyone in today's list. Do this once, when the
-                    teams are final.
-                  </p>
-                </>
-              )}
-              {practiceNote && (
-                <p className="mt-2 text-sm font-semibold" style={{ color: BLUE }}>
-                  {practiceNote}
-                </p>
+              {/* Record the game */}
+              {dbConfigured && (
+                <div className="mt-6">
+                  <SectionTitle>Record this game</SectionTitle>
+                  <Card>
+                    {!adminPw ? (
+                      <p className="text-sm" style={{ color: NAVY }}>
+                        Recording a game needs the database password. Unlock it on the{" "}
+                        <button
+                          type="button"
+                          onClick={() => setTab("players")}
+                          className="font-bold underline"
+                          style={{ color: BLUE }}
+                        >
+                          Players tab
+                        </button>
+                        .
+                      </p>
+                    ) : (
+                      <>
+                        <FieldLabel htmlFor="game-at">Game date and time</FieldLabel>
+                        <input
+                          id="game-at"
+                          type="datetime-local"
+                          value={gameAt}
+                          onChange={(e) => setGameAt(e.target.value)}
+                          className={inputClass}
+                          style={{ borderColor: COLUMBIA_SOFT }}
+                        />
+                        <p className="mt-2 text-xs text-slate-600">
+                          Counts one game for each of the {savedToday.length} player
+                          {savedToday.length === 1 ? "" : "s"} in the database.
+                          {newToday.length > 0 &&
+                            ` ${newToday.length} new player${
+                              newToday.length === 1 ? " is" : "s are"
+                            } not in the database and will not be counted.`}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => void record()}
+                          disabled={
+                            alreadyRecorded || recordBusy || !gameAt || savedToday.length === 0
+                          }
+                          className={`mt-3 ${primaryBtn}`}
+                          style={
+                            alreadyRecorded || recordBusy || savedToday.length === 0
+                              ? undefined
+                              : { backgroundColor: NAVY }
+                          }
+                        >
+                          {alreadyRecorded
+                            ? "Game recorded"
+                            : recordBusy
+                              ? "Recording..."
+                              : "Record game"}
+                        </button>
+                      </>
+                    )}
+                    {recordNote && (
+                      <p className="mt-2 text-sm font-semibold" style={{ color: BLUE }}>
+                        {recordNote}
+                      </p>
+                    )}
+                  </Card>
+                </div>
               )}
             </section>
           )}
@@ -1046,23 +1094,105 @@ export default function App() {
       ) : (
         /* ------------------------------ Players tab ------------------------------ */
         <section className="px-4 pt-6">
-          {!rosterConfigured ? (
+          {!dbConfigured ? (
             <Card>
               <p className="text-sm text-slate-600">
-                The saved player database is not set up on this copy of the app.
+                The player database is not set up on this copy of the app.
               </p>
             </Card>
-          ) : !squad ? (
-            <Card>
-              <p className="text-sm" style={{ color: NAVY }}>
-                Type a squad code above and tap <strong>Open</strong> to see and save players.
-              </p>
-            </Card>
+          ) : !adminPw ? (
+            <>
+              <SectionTitle>Player database</SectionTitle>
+              <Card>
+                <p className="text-sm" style={{ color: NAVY }}>
+                  The database holds every player's skill, positions and games played. Only
+                  people with the database password can see or change it.
+                </p>
+                <form onSubmit={(e) => void unlock(e)}>
+                  <FieldLabel htmlFor="db-password">Database password</FieldLabel>
+                  <input
+                    id="db-password"
+                    type="password"
+                    value={pwInput}
+                    onChange={(e) => {
+                      setPwInput(e.target.value);
+                      setPwError(null);
+                    }}
+                    autoComplete="current-password"
+                    className={inputClass}
+                    style={{ borderColor: COLUMBIA_SOFT }}
+                  />
+                  {pwError && <p className="mt-2 text-sm font-bold text-red-700">{pwError}</p>}
+                  <button
+                    type="submit"
+                    disabled={!pwInput || pwBusy}
+                    className={`mt-3 ${primaryBtn}`}
+                    style={pwInput && !pwBusy ? { backgroundColor: NAVY } : undefined}
+                  >
+                    {pwBusy ? "Checking..." : "Unlock"}
+                  </button>
+                </form>
+              </Card>
+            </>
           ) : (
             <>
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-sm font-semibold" style={{ color: BLUE }}>
+                  Unlocked until you refresh or lock.
+                </p>
+                <button
+                  type="button"
+                  onClick={lock}
+                  className="h-9 rounded-lg border-2 bg-white px-3 text-xs font-bold"
+                  style={{ borderColor: COLUMBIA, color: NAVY }}
+                >
+                  Lock
+                </button>
+              </div>
+
+              {dbError && <p className="mb-3 text-sm font-semibold text-red-700">{dbError}</p>}
+
+              {newToday.length > 0 && (
+                <div className="mb-6">
+                  <SectionTitle>New today, not saved ({newToday.length})</SectionTitle>
+                  <Card>
+                    <p className="text-xs text-slate-600">
+                      Added to today's list without being in the database. Save them with the
+                      skill and positions used today.
+                    </p>
+                    <ul className="mt-2 space-y-2">
+                      {newToday.map((p) => (
+                        <li
+                          key={p.id}
+                          className="flex items-center gap-3 rounded-xl border-2 p-2"
+                          style={{ borderColor: COLUMBIA_SOFT }}
+                        >
+                          <SkillBadge value={p.skill} small />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
+                              {p.name}
+                            </p>
+                            <PosTags positions={p.positions} />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void saveNewToday(p)}
+                            disabled={savingNewId === p.id}
+                            className="h-9 shrink-0 rounded-lg px-3 text-xs font-bold text-white disabled:bg-slate-300"
+                            style={savingNewId === p.id ? undefined : { backgroundColor: BLUE }}
+                          >
+                            {savingNewId === p.id ? "Saving..." : "Save to database"}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </Card>
+                </div>
+              )}
+
               <SectionTitle>{editingId ? "Edit player" : "Add a player"}</SectionTitle>
               <Card>
-                <form onSubmit={(e) => void savePlayer(e)}>
+                <form onSubmit={(e) => void savePlayerForm(e)}>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <FieldLabel htmlFor="first">First name</FieldLabel>
@@ -1071,7 +1201,7 @@ export default function App() {
                         value={formFirst}
                         onChange={(e) => setFormFirst(e.target.value)}
                         maxLength={30}
-                        className="h-12 w-full rounded-xl border-2 px-3 text-base outline-none focus:border-[#1d4f91]"
+                        className={inputClass}
                         style={{ borderColor: COLUMBIA_SOFT }}
                       />
                     </div>
@@ -1082,7 +1212,7 @@ export default function App() {
                         value={formLast}
                         onChange={(e) => setFormLast(e.target.value)}
                         maxLength={30}
-                        className="h-12 w-full rounded-xl border-2 px-3 text-base outline-none focus:border-[#1d4f91]"
+                        className={inputClass}
                         style={{ borderColor: COLUMBIA_SOFT }}
                       />
                     </div>
@@ -1091,11 +1221,9 @@ export default function App() {
                   <SkillPicker value={formSkill} onChange={setFormSkill} />
                   <FieldLabel>Positions</FieldLabel>
                   <PositionPicker value={formPositions} onChange={setFormPositions} />
-
                   {formError && (
                     <p className="mt-3 text-sm font-bold text-red-700">{formError}</p>
                   )}
-
                   <div className="mt-4 flex gap-2">
                     <button
                       type="submit"
@@ -1120,19 +1248,13 @@ export default function App() {
               </Card>
 
               <div className="mt-6 mb-2 flex items-center justify-between gap-2">
-                <SectionTitle>
-                  Saved players
-                  <span className="font-normal text-slate-500">
-                    {" "}
-                    ({rosterLoading ? "loading" : roster.length})
-                  </span>
-                </SectionTitle>
+                <SectionTitle>Players ({dbPlayers.length})</SectionTitle>
                 <div className="flex gap-1">
                   {(
                     [
                       ["name", "A to Z"],
-                      ["practices", "Most practices"],
-                    ] as ["name" | "practices", string][]
+                      ["games", "Most games"],
+                    ] as ["name" | "games", string][]
                   ).map(([key, label]) => (
                     <button
                       key={key}
@@ -1147,105 +1269,146 @@ export default function App() {
                 </div>
               </div>
 
-              {!rosterLoading && roster.length === 0 ? (
+              {dbPlayers.length === 0 ? (
                 <p
                   className="rounded-2xl border-2 border-dashed bg-white p-6 text-center text-sm"
                   style={{ borderColor: COLUMBIA, color: BLUE }}
                 >
-                  No saved players in {squad} yet. Add one above, or add players on the Pick
-                  teams tab and they'll be saved here.
+                  No players in the database yet. Add one above.
                 </p>
               ) : (
                 <ul className="space-y-2">
-                  {sortedRoster.map((p) => {
-                    const playing = inToday(fullName(p));
-                    return (
-                      <li
-                        key={p.id}
-                        className="rounded-xl border-2 bg-white p-3"
-                        style={{
-                          borderColor: editingId === p.id ? BLUE : COLUMBIA_SOFT,
-                        }}
-                      >
-                        <div className="flex items-center gap-3">
-                          <SkillBadge value={p.skill} />
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate font-bold" style={{ color: NAVY }}>
-                              {fullName(p)}
-                            </p>
-                            <PosTags positions={p.positions} />
-                          </div>
-                          <div className="shrink-0 text-right">
-                            <p className="text-lg leading-none font-extrabold" style={{ color: NAVY }}>
-                              {p.practices}
-                            </p>
-                            <p className="text-[11px] text-slate-500">
-                              practice{p.practices === 1 ? "" : "s"}
-                            </p>
-                          </div>
+                  {sortedDb.map((p) => (
+                    <li
+                      key={p.id}
+                      className="rounded-xl border-2 bg-white p-3"
+                      style={{ borderColor: editingId === p.id ? BLUE : COLUMBIA_SOFT }}
+                    >
+                      <div className="flex items-center gap-3">
+                        <SkillBadge value={p.skill} />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate font-bold" style={{ color: NAVY }}>
+                            {fullName(p)}
+                          </p>
+                          <PosTags positions={p.positions} />
                         </div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              addToToday([
-                                { name: fullName(p), skill: p.skill, positions: p.positions },
-                              ])
-                            }
-                            disabled={playing}
-                            className="h-9 rounded-lg px-3 text-xs font-bold text-white disabled:bg-slate-200 disabled:text-slate-500"
-                            style={playing ? undefined : { backgroundColor: BLUE }}
+                        <div className="shrink-0 text-right">
+                          <p
+                            className="text-lg leading-none font-extrabold"
+                            style={{ color: NAVY }}
                           >
-                            {playing ? "Playing today" : "Add to today"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => editPlayer(p)}
-                            className="h-9 rounded-lg border-2 px-3 text-xs font-bold"
-                            style={{ borderColor: COLUMBIA, color: NAVY }}
-                          >
-                            Edit
-                          </button>
-                          {confirmRemoveId === p.id ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => void removeSaved(p.id)}
-                                className="h-9 rounded-lg px-3 text-xs font-bold text-white"
-                                style={{ backgroundColor: "#a3242f" }}
-                              >
-                                Delete {p.firstName}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setConfirmRemoveId(null)}
-                                className="h-9 rounded-lg border-2 px-3 text-xs font-semibold"
-                                style={{ borderColor: COLUMBIA, color: NAVY }}
-                              >
-                                Keep
-                              </button>
-                            </>
-                          ) : (
+                            {p.gamesPlayed}
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            game{p.gamesPlayed === 1 ? "" : "s"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => editPlayer(p)}
+                          className="h-9 rounded-lg border-2 px-3 text-xs font-bold"
+                          style={{ borderColor: COLUMBIA, color: NAVY }}
+                        >
+                          Edit
+                        </button>
+                        {confirmRemoveId === p.id ? (
+                          <>
                             <button
                               type="button"
-                              onClick={() => setConfirmRemoveId(p.id)}
-                              className="h-9 rounded-lg border-2 px-3 text-xs font-semibold text-slate-500"
-                              style={{ borderColor: COLUMBIA_SOFT }}
+                              onClick={() => void removeSaved(p.id)}
+                              className="h-9 rounded-lg px-3 text-xs font-bold text-white"
+                              style={{ backgroundColor: "#a3242f" }}
                             >
-                              Remove
+                              Delete {p.firstName}
                             </button>
-                          )}
-                          {p.lastPracticeAt && (
-                            <span className="ml-auto text-[11px] text-slate-500">
-                              Last: {new Date(p.lastPracticeAt).toLocaleDateString()}
-                            </span>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
+                            <button
+                              type="button"
+                              onClick={() => setConfirmRemoveId(null)}
+                              className="h-9 rounded-lg border-2 px-3 text-xs font-semibold"
+                              style={{ borderColor: COLUMBIA, color: NAVY }}
+                            >
+                              Keep
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmRemoveId(p.id)}
+                            className="h-9 rounded-lg border-2 px-3 text-xs font-semibold text-slate-500"
+                            style={{ borderColor: COLUMBIA_SOFT }}
+                          >
+                            Remove
+                          </button>
+                        )}
+                        {p.lastPlayedAt && (
+                          <span className="ml-auto text-[11px] text-slate-500">
+                            Last game: {formatGameTime(p.lastPlayedAt)}
+                          </span>
+                        )}
+                      </div>
+                    </li>
+                  ))}
                 </ul>
               )}
+
+              <div className="mt-8">
+                <SectionTitle>Recent games ({games.length})</SectionTitle>
+                {games.length === 0 ? (
+                  <p className="text-sm text-slate-500">
+                    No games recorded yet. Make teams on the Pick teams tab, then record the game.
+                  </p>
+                ) : (
+                  <ul className="space-y-2">
+                    {games.map((g) => (
+                      <li
+                        key={g.id}
+                        className="flex items-center gap-2 rounded-xl border-2 bg-white p-3"
+                        style={{ borderColor: COLUMBIA_SOFT }}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-bold" style={{ color: NAVY }}>
+                            {formatGameTime(g.playedAt)}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            {g.players} player{g.players === 1 ? "" : "s"}
+                          </p>
+                        </div>
+                        {confirmGameId === g.id ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void removeGameEntry(g.id)}
+                              className="h-9 rounded-lg px-3 text-xs font-bold text-white"
+                              style={{ backgroundColor: "#a3242f" }}
+                            >
+                              Delete game
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmGameId(null)}
+                              className="h-9 rounded-lg border-2 px-3 text-xs font-semibold"
+                              style={{ borderColor: COLUMBIA, color: NAVY }}
+                            >
+                              Keep
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmGameId(g.id)}
+                            className="h-9 rounded-lg border-2 px-3 text-xs font-semibold text-slate-500"
+                            style={{ borderColor: COLUMBIA_SOFT }}
+                          >
+                            Remove
+                          </button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </>
           )}
         </section>

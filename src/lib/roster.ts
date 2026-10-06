@@ -2,32 +2,34 @@ import { createClient } from "@supabase/supabase-js";
 import type { Position } from "./teams";
 
 /**
- * The saved player database, stored in Supabase.
+ * The central player database, stored in Supabase.
  *
- * The browser talks to Supabase directly with the publishable key, which is
- * designed to be public. What protects the data is Row Level Security and the
- * table's own constraints (see supabase/schema.sql), not secrecy of the key.
+ * The browser cannot touch the tables directly. It can only call the named
+ * functions defined in supabase/schema.sql: lookup_players is open to anyone,
+ * and every admin_ function checks the shared database password inside the
+ * database itself. The publishable key used here is designed to be public.
  */
 
 const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined;
 
-export const rosterConfigured = Boolean(
-  url && key && !key.startsWith("paste-your"),
-);
+export const dbConfigured = Boolean(url && key && !key.startsWith("paste-your"));
 
-const supabase = rosterConfigured ? createClient(url!, key!) : null;
+const supabase = dbConfigured ? createClient(url!, key!) : null;
 
-const SPORT = "soccer";
-
-export type SavedPlayer = {
+/** A player as the open lookup returns them. */
+export type KnownPlayer = {
   id: string;
   firstName: string;
   lastName: string;
   skill: number;
   positions: Position[];
-  practices: number;
-  lastPracticeAt: string | null;
+};
+
+/** A player as password holders see them, with their game history. */
+export type SavedPlayer = KnownPlayer & {
+  gamesPlayed: number;
+  lastPlayedAt: string | null;
 };
 
 export type PlayerDetails = {
@@ -37,25 +39,11 @@ export type PlayerDetails = {
   positions: Position[];
 };
 
-type Row = {
+export type GameSummary = {
   id: string;
-  first_name: string;
-  last_name: string;
-  skill: number;
-  positions: Position[];
-  practices: number;
-  last_practice_at: string | null;
+  playedAt: string;
+  players: number;
 };
-
-const fromRow = (r: Row): SavedPlayer => ({
-  id: r.id,
-  firstName: r.first_name,
-  lastName: r.last_name,
-  skill: r.skill,
-  positions: r.positions,
-  practices: r.practices,
-  lastPracticeAt: r.last_practice_at,
-});
 
 /** "Marlo Silva", or just "Marlo" when there is no last name. */
 export function fullName(p: { firstName: string; lastName: string }): string {
@@ -73,37 +61,27 @@ export function splitName(name: string): { firstName: string; lastName: string }
   return { firstName: parts[0] ?? "", lastName: parts.slice(1).join(" ") };
 }
 
-/** Normalise a squad code so "CBS Sunday" and "cbs-sunday" mean the same squad. */
-export function normaliseSquad(raw: string): string {
-  return raw
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")
-    .slice(0, 40);
-}
-
 export type Match =
-  | { kind: "found"; player: SavedPlayer }
-  | { kind: "ambiguous"; candidates: SavedPlayer[] }
+  | { kind: "found"; player: KnownPlayer }
+  | { kind: "ambiguous"; candidates: KnownPlayer[] }
   | { kind: "none" };
 
 /**
- * Find a typed or pasted name in the saved database.
+ * Find a typed or pasted name among known players.
  *
  * A full name must match exactly. A first name on its own matches only when
- * exactly one saved player has that first name. Two saved Marlos and a plain
- * "Marlo" is ambiguous, and the app asks for the last name rather than guessing.
+ * exactly one known player has that first name. Two Marlos and a plain "Marlo"
+ * is ambiguous, and the app asks for the last name rather than guessing.
  */
-export function findSaved(name: string, saved: SavedPlayer[]): Match {
-  const key = nameKey(name);
-  if (!key) return { kind: "none" };
+export function findSaved(name: string, known: KnownPlayer[]): Match {
+  const wanted = nameKey(name);
+  if (!wanted) return { kind: "none" };
 
-  const exact = saved.find((p) => nameKey(fullName(p)) === key);
+  const exact = known.find((p) => nameKey(fullName(p)) === wanted);
   if (exact) return { kind: "found", player: exact };
 
-  if (!key.includes(" ")) {
-    const byFirst = saved.filter((p) => nameKey(p.firstName) === key);
+  if (!wanted.includes(" ")) {
+    const byFirst = known.filter((p) => nameKey(p.firstName) === wanted);
     if (byFirst.length === 1) return { kind: "found", player: byFirst[0]! };
     if (byFirst.length > 1) return { kind: "ambiguous", candidates: byFirst };
   }
@@ -111,7 +89,25 @@ export function findSaved(name: string, saved: SavedPlayer[]): Match {
   return { kind: "none" };
 }
 
-function requireClient() {
+/** Turn database errors into something a person can act on. */
+export function friendlyError(err: unknown): string {
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof err === "object" && err && "message" in err
+        ? String((err as { message: unknown }).message)
+        : String(err);
+  if (message.includes("Wrong password")) return "That password is not right.";
+  if (message.includes("players_unique_name")) {
+    return "Someone with that name is already in the database.";
+  }
+  if (message.toLowerCase().includes("failed to fetch")) {
+    return "Could not reach the database. Check your connection and try again.";
+  }
+  return message;
+}
+
+function client() {
   if (!supabase) {
     throw new Error(
       "The player database is not set up. Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to .env.local.",
@@ -120,89 +116,114 @@ function requireClient() {
   return supabase;
 }
 
-export async function loadRoster(squad: string): Promise<SavedPlayer[]> {
-  const { data, error } = await requireClient()
-    .from("players")
-    .select("id, first_name, last_name, skill, positions, practices, last_practice_at")
-    .eq("squad", squad)
-    .eq("sport", SPORT)
-    .order("first_name")
-    .order("last_name");
+type PlayerRow = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  skill: number;
+  positions: Position[];
+  games_played?: number;
+  last_played_at?: string | null;
+};
+
+const toKnown = (r: PlayerRow): KnownPlayer => ({
+  id: r.id,
+  firstName: r.first_name,
+  lastName: r.last_name,
+  skill: r.skill,
+  positions: r.positions,
+});
+
+async function call<T>(fn: string, args: Record<string, unknown>): Promise<T> {
+  const { data, error } = await client().rpc(fn, args);
   if (error) throw new Error(error.message);
-  return ((data ?? []) as Row[]).map(fromRow);
+  return data as T;
 }
 
-/**
- * Save players to the squad's database. A name already saved is updated with
- * the new skill and positions rather than duplicated. The practice count is
- * never touched here, only by recordPractice.
- */
-export async function saveToRoster(squad: string, players: PlayerDetails[]): Promise<void> {
-  if (!players.length) return;
-  // Collapse duplicates within one batch, keeping the last one, so a single
-  // upsert never tries to write the same name twice.
-  const byKey = new Map<string, PlayerDetails>();
-  for (const p of players) byKey.set(nameKey(fullName(p)), p);
+// --- Open to anyone ---------------------------------------------------------
 
-  const rows = [...byKey.values()].map((p) => ({
-    squad,
-    sport: SPORT,
-    first_name: p.firstName.trim(),
-    last_name: p.lastName.trim(),
-    skill: p.skill,
-    positions: p.positions,
+/** Look up only these names. Returns nothing for names not in the database. */
+export async function lookupPlayers(names: string[]): Promise<KnownPlayer[]> {
+  const unique = [...new Set(names.map((n) => n.trim()).filter(Boolean))];
+  if (!unique.length) return [];
+  const rows = await call<PlayerRow[] | null>("lookup_players", { p_names: unique });
+  return (rows ?? []).map(toKnown);
+}
+
+export async function verifyPassword(password: string): Promise<boolean> {
+  return Boolean(await call<boolean>("admin_verify", { p_password: password }));
+}
+
+// --- Password holders only --------------------------------------------------
+
+export async function listPlayers(password: string): Promise<SavedPlayer[]> {
+  const rows = await call<PlayerRow[] | null>("admin_list_players", { p_password: password });
+  return (rows ?? []).map((r) => ({
+    ...toKnown(r),
+    gamesPlayed: Number(r.games_played ?? 0),
+    lastPlayedAt: r.last_played_at ?? null,
   }));
-
-  const { error } = await requireClient()
-    .from("players")
-    .upsert(rows, { onConflict: "squad,sport,name_key" });
-  if (error) throw new Error(error.message);
 }
 
-/**
- * Edit one saved player in place. Unlike saveToRoster, this keeps the same row
- * even when the name changes, so the practice count stays with the player.
- */
-export async function updatePlayer(id: string, p: PlayerDetails): Promise<void> {
-  const { error } = await requireClient()
-    .from("players")
-    .update({
+export async function savePlayers(password: string, players: PlayerDetails[]): Promise<void> {
+  if (!players.length) return;
+  await call("admin_upsert_players", {
+    p_password: password,
+    p_players: players.map((p) => ({
       first_name: p.firstName.trim(),
       last_name: p.lastName.trim(),
       skill: p.skill,
       positions: p.positions,
-    })
-    .eq("id", id);
-  if (error) throw new Error(error.message);
-}
-
-/** Turn database errors into something a person can act on. */
-export function friendlyError(err: unknown): string {
-  const message = err instanceof Error ? err.message : String(err);
-  if (message.includes("players_unique_name")) {
-    return "Someone with that name is already saved in this squad.";
-  }
-  if (message.includes("200 players")) {
-    return "This squad already has 200 saved players.";
-  }
-  if (message.toLowerCase().includes("failed to fetch")) {
-    return "Could not reach the database. Check your connection and try again.";
-  }
-  return message;
-}
-
-export async function removeFromRoster(id: string): Promise<void> {
-  const { error } = await requireClient().from("players").delete().eq("id", id);
-  if (error) throw new Error(error.message);
-}
-
-/** Add one practice to each of these players. Returns how many were updated. */
-export async function recordPractice(squad: string, names: string[]): Promise<number> {
-  const { data, error } = await requireClient().rpc("record_practice", {
-    p_squad: squad,
-    p_sport: SPORT,
-    p_keys: names.map(nameKey),
+    })),
   });
-  if (error) throw new Error(error.message);
-  return (data as number | null) ?? 0;
+}
+
+export async function updatePlayer(
+  password: string,
+  id: string,
+  p: PlayerDetails,
+): Promise<void> {
+  await call("admin_update_player", {
+    p_password: password,
+    p_id: id,
+    p_first_name: p.firstName.trim(),
+    p_last_name: p.lastName.trim(),
+    p_skill: p.skill,
+    p_positions: p.positions,
+  });
+}
+
+export async function removePlayer(password: string, id: string): Promise<void> {
+  await call("admin_remove_player", { p_password: password, p_id: id });
+}
+
+/** Save a game. Returns how many saved players were counted. */
+export async function recordGame(
+  password: string,
+  playedAt: Date,
+  playerIds: string[],
+): Promise<number> {
+  return Number(
+    await call<number>("admin_record_game", {
+      p_password: password,
+      p_played_at: playedAt.toISOString(),
+      p_player_ids: playerIds,
+    }),
+  );
+}
+
+export async function listGames(password: string): Promise<GameSummary[]> {
+  const rows = await call<{ id: string; played_at: string; players: number }[] | null>(
+    "admin_list_games",
+    { p_password: password },
+  );
+  return (rows ?? []).map((r) => ({
+    id: r.id,
+    playedAt: r.played_at,
+    players: Number(r.players),
+  }));
+}
+
+export async function removeGame(password: string, id: string): Promise<void> {
+  await call("admin_remove_game", { p_password: password, p_id: id });
 }
