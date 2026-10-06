@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   EXAMPLE_PLAYERS,
   POSITIONS,
@@ -12,6 +12,25 @@ import {
   type Split,
 } from "./lib/teams";
 import { parsePlayerList, type ParseResult } from "./lib/parse";
+import {
+  loadRoster,
+  nameKey,
+  normaliseSquad,
+  removeFromRoster,
+  rosterConfigured,
+  saveToRoster,
+  type SavedPlayer,
+} from "./lib/roster";
+
+const SQUAD_STORAGE_KEY = "soccer-selector-squad";
+
+function readStoredSquad(): string {
+  try {
+    return localStorage.getItem(SQUAD_STORAGE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
 
 const NAVY = "#13375e";
 const BLUE = "#1d4f91";
@@ -72,6 +91,78 @@ export default function App() {
   const [preview, setPreview] = useState<ParseResult | null>(null);
   const [pasteNote, setPasteNote] = useState<string | null>(null);
 
+  // The saved roster for the current squad, stored in Supabase.
+  const [squad, setSquad] = useState(readStoredSquad);
+  const [squadInput, setSquadInput] = useState(readStoredSquad);
+  const [roster, setRoster] = useState<SavedPlayer[]>([]);
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [rosterError, setRosterError] = useState<string | null>(null);
+
+  const refreshRoster = async (code: string) => {
+    if (!rosterConfigured || !code) {
+      setRoster([]);
+      return;
+    }
+    setRosterLoading(true);
+    try {
+      setRoster(await loadRoster(code));
+      setRosterError(null);
+    } catch (err) {
+      setRosterError(err instanceof Error ? err.message : "Could not load the roster");
+    } finally {
+      setRosterLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void refreshRoster(squad);
+  }, [squad]);
+
+  const openSquad = () => {
+    const code = normaliseSquad(squadInput);
+    setSquadInput(code);
+    setSquad(code);
+    try {
+      localStorage.setItem(SQUAD_STORAGE_KEY, code);
+    } catch {
+      /* storage blocked; the squad still works for this visit */
+    }
+  };
+
+  /** Save to the roster in the background. Today's list works even if this fails. */
+  const remember = async (
+    toSave: Pick<Player, "name" | "skill" | "positions">[],
+  ) => {
+    if (!rosterConfigured || !squad || !toSave.length) return;
+    try {
+      await saveToRoster(squad, toSave);
+      await refreshRoster(squad);
+    } catch (err) {
+      setRosterError(err instanceof Error ? err.message : "Could not save to the roster");
+    }
+  };
+
+  const forget = async (id: string) => {
+    try {
+      await removeFromRoster(id);
+      setRoster((prev) => prev.filter((p) => p.id !== id));
+    } catch (err) {
+      setRosterError(err instanceof Error ? err.message : "Could not remove that player");
+    }
+  };
+
+  const inToday = (playerName: string) =>
+    players.some((p) => nameKey(p.name) === nameKey(playerName));
+
+  const addFromRoster = (saved: SavedPlayer) => {
+    if (inToday(saved.name)) return;
+    setPlayers((prev) => [
+      ...prev,
+      { id: newId(), name: saved.name, skill: saved.skill, positions: [...saved.positions] },
+    ]);
+    setSplit(null);
+  };
+
   const canMake = players.length >= teamCount * 2;
 
   const togglePosition = (p: Position) =>
@@ -83,10 +174,9 @@ export default function App() {
     e.preventDefault();
     if (!name.trim()) return setFormError("Give the player a name");
     if (!positions.length) return setFormError("Pick at least one position");
-    setPlayers((prev) => [
-      ...prev,
-      { id: newId(), name: name.trim(), skill, positions: [...positions] },
-    ]);
+    const added = { id: newId(), name: name.trim(), skill, positions: [...positions] };
+    setPlayers((prev) => [...prev, added]);
+    void remember([added]);
     setName("");
     setSkill(3);
     setPositions([]);
@@ -120,6 +210,7 @@ export default function App() {
       parsePlayerList(
         pasteText,
         players.map((p) => p.name),
+        roster,
       ),
     );
     setPasteNote(null);
@@ -137,6 +228,7 @@ export default function App() {
         positions: p.positions,
       })),
     ]);
+    void remember(preview.players);
     setSplit(null);
     setPreview(null);
     setPasteNote(`Added ${count} player${count === 1 ? "" : "s"}`);
@@ -173,6 +265,118 @@ export default function App() {
           </p>
         </div>
       </header>
+
+      {/* Squad and saved roster */}
+      <section className="px-4 pt-6">
+        <h2 className="mb-3 text-lg font-bold" style={{ color: NAVY }}>
+          Your squad
+        </h2>
+        <div
+          className="rounded-2xl border-2 bg-white p-4 shadow-sm"
+          style={{ borderColor: COLUMBIA }}
+        >
+          {!rosterConfigured ? (
+            <p className="text-sm text-slate-600">
+              Saved rosters are not set up on this copy of the app. Everything else still works.
+            </p>
+          ) : (
+            <>
+              <label
+                className="block text-sm font-bold"
+                htmlFor="squad"
+                style={{ color: NAVY }}
+              >
+                Squad code
+              </label>
+              <p className="text-xs text-slate-500">
+                Everyone who uses the same code shares the same saved players. Not a password:
+                anyone who knows the code can edit the squad.
+              </p>
+              <div className="mt-2 flex gap-2">
+                <input
+                  id="squad"
+                  value={squadInput}
+                  onChange={(e) => setSquadInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && squadInput.trim() && openSquad()}
+                  placeholder="e.g. cbs-sunday"
+                  maxLength={40}
+                  className="h-12 min-w-0 flex-1 rounded-xl border-2 px-3 text-base outline-none focus:border-[#1d4f91]"
+                  style={{ borderColor: COLUMBIA_SOFT }}
+                />
+                <button
+                  type="button"
+                  onClick={openSquad}
+                  disabled={!squadInput.trim()}
+                  className="h-12 rounded-xl px-4 text-sm font-bold text-white disabled:bg-slate-300"
+                  style={squadInput.trim() ? { backgroundColor: BLUE } : undefined}
+                >
+                  Open
+                </button>
+              </div>
+
+              {rosterError && (
+                <p className="mt-3 text-sm font-semibold text-red-700">{rosterError}</p>
+              )}
+
+              {squad && (
+                <div className="mt-4">
+                  <p className="text-sm font-bold" style={{ color: NAVY }}>
+                    Saved players in <span style={{ color: BLUE }}>{squad}</span>
+                    <span className="font-normal text-slate-500">
+                      {" "}
+                      ({rosterLoading ? "loading" : roster.length})
+                    </span>
+                  </p>
+                  {!rosterLoading && roster.length === 0 ? (
+                    <p className="mt-1 text-xs text-slate-500">
+                      No one saved yet. Anyone you add below is saved here automatically.
+                    </p>
+                  ) : (
+                    <ul className="mt-2 space-y-1">
+                      {roster.map((p) => {
+                        const already = inToday(p.name);
+                        return (
+                          <li
+                            key={p.id}
+                            className="flex items-center gap-2 rounded-xl border-2 bg-white p-2"
+                            style={{ borderColor: COLUMBIA_SOFT }}
+                          >
+                            <SkillBadge value={p.skill} small />
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
+                                {p.name}
+                              </p>
+                              <PosTags positions={p.positions} />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => addFromRoster(p)}
+                              disabled={already}
+                              className="h-9 rounded-lg px-3 text-xs font-bold text-white disabled:bg-slate-200 disabled:text-slate-500"
+                              style={already ? undefined : { backgroundColor: BLUE }}
+                            >
+                              {already ? "Playing" : "Add"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void forget(p.id)}
+                              aria-label={`Remove ${p.name} from the saved roster`}
+                              className="h-9 w-9 rounded-lg border-2 text-base font-bold"
+                              style={{ borderColor: COLUMBIA_SOFT, color: BLUE }}
+                            >
+                              ×
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </section>
 
       {/* Add players */}
       <section className="px-4 pt-6">
@@ -329,6 +533,14 @@ export default function App() {
                           {p.name}
                         </p>
                         <PosTags positions={p.positions} />
+                        {p.fromRoster && (
+                          <p
+                            className="mt-1 text-xs font-semibold"
+                            style={{ color: BLUE }}
+                          >
+                            from roster
+                          </p>
+                        )}
                         {(p.skillDefaulted || p.positionDefaulted) && (
                           <p className="mt-1 text-xs text-slate-500">
                             {[

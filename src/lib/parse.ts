@@ -3,7 +3,12 @@ import type { Player, Position } from "./teams";
 export type ParsedPlayer = Omit<Player, "id"> & {
   skillDefaulted: boolean;
   positionDefaulted: boolean;
+  /** True when a missing skill or position was filled in from the saved roster. */
+  fromRoster: boolean;
 };
+
+/** The parts of a saved roster player the parser needs. */
+export type KnownPlayer = Pick<Player, "name" | "skill" | "positions">;
 
 export type SkippedLine = {
   line: string;
@@ -71,13 +76,23 @@ function stripLeadingClutter(line: string) {
     .trim();
 }
 
+/**
+ * Read a pasted list into players.
+ *
+ * `existingNames` are the players already in today's list, which get skipped.
+ * `known` is the saved roster: when a line gives only a name, or leaves out the
+ * skill or positions, the saved values fill the gap. Anything written explicitly
+ * on the line still wins over the saved value.
+ */
 export function parsePlayerList(
   text: string,
   existingNames: string[] = [],
+  known: KnownPlayer[] = [],
 ): ParseResult {
   const players: ParsedPlayer[] = [];
   const skipped: SkippedLine[] = [];
   const taken = new Set(existingNames.map((n) => normalise(n)));
+  const knownByName = new Map(known.map((p) => [normalise(p.name), p]));
 
   for (const rawLine of text.split(/\r?\n/)) {
     const original = rawLine.trim();
@@ -96,7 +111,7 @@ export function parsePlayerList(
     }
 
     if (taken.has(normalise(name))) {
-      skipped.push({ line: original, reason: "already on the roster" });
+      skipped.push({ line: original, reason: "already in today's list" });
       continue;
     }
 
@@ -138,11 +153,32 @@ export function parsePlayerList(
       continue;
     }
 
+    // Fill gaps from the saved roster before falling back to the defaults.
+    const saved = knownByName.get(normalise(name));
+    let fromRoster = false;
+    if (saved && skillDefaulted) {
+      skill = saved.skill;
+      skillDefaulted = false;
+      fromRoster = true;
+    }
+    if (saved && positions.length === 0) {
+      positions.push(...saved.positions);
+      fromRoster = true;
+    }
+
     const positionDefaulted = positions.length === 0;
     if (positionDefaulted) positions.push(DEFAULT_POSITION);
 
     taken.add(normalise(name));
-    players.push({ name, skill, positions, skillDefaulted, positionDefaulted });
+    players.push({
+      // Use the saved spelling when the player is known, so "marlo" shows as "Marlo".
+      name: saved ? saved.name : name,
+      skill,
+      positions,
+      skillDefaulted,
+      positionDefaulted,
+      fromRoster,
+    });
   }
 
   return { players, skipped };
