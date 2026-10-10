@@ -45,7 +45,7 @@ export const newId = () => `p${Date.now().toString(36)}${seq++}`;
 
 const rand = (n: number) => Math.floor(Math.random() * n);
 
-function shuffle<T>(arr: T[]): T[] {
+export function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
     const j = rand(i + 1);
