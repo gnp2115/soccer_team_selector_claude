@@ -18,6 +18,11 @@ brief.
 - **Make teams**, choosing 2, 3 or 4 sides. Women are spread evenly across the teams, and each
   team card shows how many it has
 - **Reshuffle** for a different split, never the same one twice in a row
+- **Confirm teams** to see each team on a pitch: keeper in goal, then defenders, midfielders and
+  attackers, each player in a spot they play wherever the team allows. Tap two players to swap
+  them, or Reshuffle positions for a new arrangement
+- **Copy for WhatsApp** to paste the confirmed line-ups into the group chat. Skill ratings are
+  left out of the message on purpose
 - **Clear all** to empty the roster, with a confirm step
 
 Nothing is saved. The roster lives in the browser and resets when the page reloads.

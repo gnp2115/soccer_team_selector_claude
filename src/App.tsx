@@ -17,6 +17,7 @@ import {
   type Team,
 } from "./lib/teams";
 import { makeFormation, swapSlots, type Formation } from "./lib/formation";
+import { lineupText } from "./lib/lineup";
 import {
   extractNames,
   parsePlayerList,
@@ -409,6 +410,9 @@ export default function App() {
   const [formations, setFormations] = useState<Formation[] | null>(null);
   const [confirmedKey, setConfirmedKey] = useState<string | null>(null);
   const [picked, setPicked] = useState<{ team: number; slot: number } | null>(null);
+  const [copyNote, setCopyNote] = useState<string | null>(null);
+  /** The line-up text, shown for copying by hand if the browser blocks the clipboard. */
+  const [copyFallback, setCopyFallback] = useState<string | null>(null);
 
   const todaySignature = `${gameAt}|${players
     .map((p) => nameKey(p.name))
@@ -464,12 +468,16 @@ export default function App() {
     setFormations(split.teams.map(makeFormation));
     setConfirmedKey(splitKey(split));
     setPicked(null);
+    setCopyNote(null);
+    setCopyFallback(null);
   };
 
   const reshufflePositions = (ti: number) => {
     if (!split || !formations) return;
     setFormations(formations.map((f, i) => (i === ti ? makeFormation(split.teams[ti]!) : f)));
     setPicked(null);
+    setCopyNote(null);
+    setCopyFallback(null);
   };
 
   /** Tap one player, then a team-mate on the same pitch, to swap their spots. */
@@ -479,6 +487,21 @@ export default function App() {
     if (picked.slot === si) return setPicked(null);
     setFormations(formations.map((f, i) => (i === ti ? swapSlots(f, picked.slot, si) : f)));
     setPicked(null);
+    setCopyNote(null);
+    setCopyFallback(null);
+  };
+
+  const copyLineups = async () => {
+    if (!split || !formations) return;
+    const text = lineupText(formations, split.teams);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyFallback(null);
+      setCopyNote("Copied. Paste it into the WhatsApp group.");
+    } catch {
+      setCopyFallback(text);
+      setCopyNote("This browser blocked copying. Select the text below and copy it by hand.");
+    }
   };
 
   const record = async () => {
@@ -1375,6 +1398,30 @@ export default function App() {
                       </Card>
                     ))}
                   </div>
+
+                  <button
+                    type="button"
+                    onClick={() => void copyLineups()}
+                    className={`mt-4 ${primaryBtn}`}
+                    style={{ backgroundColor: "#1f8a4c" }}
+                  >
+                    Copy for WhatsApp
+                  </button>
+                  {copyNote && (
+                    <p className="mt-2 text-sm font-semibold" style={{ color: BLUE }}>
+                      {copyNote}
+                    </p>
+                  )}
+                  {copyFallback && (
+                    <textarea
+                      readOnly
+                      value={copyFallback}
+                      rows={10}
+                      onFocus={(e) => e.currentTarget.select()}
+                      className="mt-2 w-full rounded-xl border-2 p-3 font-mono text-sm"
+                      style={{ borderColor: COLUMBIA_SOFT }}
+                    />
+                  )}
 
                   {/* Record the game */}
                   {dbConfigured && (
