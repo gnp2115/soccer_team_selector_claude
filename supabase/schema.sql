@@ -13,8 +13,10 @@
 --     appears in the code, GitHub or Vercel.
 --   * Game counts are calculated from recorded games, never typed in.
 --
--- Safe to re-run: nothing here deletes data. Run 000_remove_v1.sql first, once,
--- only when upgrading from the first version.
+-- Safe to re-run: nothing here deletes data. Re-running it is also how the
+-- live database is upgraded (it adds any missing columns and replaces the
+-- functions). Run 000_remove_v1.sql first, once, only when upgrading from the
+-- first version.
 
 create extension if not exists pgcrypto with schema extensions;
 
@@ -91,6 +93,12 @@ create table if not exists public.players (
   constraint players_unique_name unique (sport, name_key)
 );
 
+-- Gender: M or W. Empty for players saved before it was recorded; the app
+-- shows those as "gender missing". Added this way so re-running upgrades the
+-- live table without touching any rows.
+alter table public.players
+  add column if not exists gender text check (gender in ('M', 'W'));
+
 create index if not exists players_first_name_idx
   on public.players (sport, lower(btrim(first_name)));
 
@@ -138,8 +146,12 @@ create trigger players_touch_updated_at
 
 -- Return only the players whose names were asked for: by full name, or by
 -- first name alone. There is no way to list the whole database from here.
+-- (Dropped first because its output gained a column; it holds no data.)
+drop function if exists public.lookup_players(text[]);
 create or replace function public.lookup_players(p_names text[])
-returns table (id uuid, first_name text, last_name text, skill smallint, positions text[])
+returns table (
+  id uuid, first_name text, last_name text, skill smallint, positions text[], gender text
+)
 language sql
 stable
 security definer
@@ -149,7 +161,7 @@ as $$
     select lower(btrim(regexp_replace(n, '\s+', ' ', 'g'))) as k
     from unnest((coalesce(p_names, '{}'::text[]))[1:60]) as n
   )
-  select p.id, p.first_name, p.last_name, p.skill, p.positions
+  select p.id, p.first_name, p.last_name, p.skill, p.positions, p.gender
   from public.players p
   where p.sport = 'soccer'
     and (p.name_key in (select k from wanted)
@@ -169,9 +181,11 @@ $$;
 -- Password holders only
 -- ---------------------------------------------------------------------------
 
+-- (Dropped first because its output gained a column; it holds no data.)
+drop function if exists public.admin_list_players(text);
 create or replace function public.admin_list_players(p_password text)
 returns table (
-  id uuid, first_name text, last_name text, skill smallint, positions text[],
+  id uuid, first_name text, last_name text, skill smallint, positions text[], gender text,
   games_played bigint, last_played_at timestamptz
 )
 language plpgsql
@@ -182,7 +196,7 @@ as $$
 begin
   perform private.require_admin(p_password);
   return query
-    select p.id, p.first_name, p.last_name, p.skill, p.positions,
+    select p.id, p.first_name, p.last_name, p.skill, p.positions, p.gender,
            count(gp.game_id), max(g.played_at)
     from public.players p
     left join public.game_players gp on gp.player_id = p.id
@@ -193,7 +207,8 @@ begin
 end;
 $$;
 
--- Add players, or update them when the name already exists.
+-- Add players, or update them when the name already exists. A player sent
+-- without a gender keeps the gender already saved.
 create or replace function public.admin_upsert_players(p_password text, p_players jsonb)
 returns integer
 language plpgsql
@@ -209,20 +224,22 @@ begin
     raise exception 'Send between 1 and 60 players';
   end if;
 
-  insert into public.players (sport, first_name, last_name, skill, positions)
+  insert into public.players as p (sport, first_name, last_name, skill, positions, gender)
   select distinct on (lower(btrim(regexp_replace(
            (x->>'first_name') || ' ' || coalesce(x->>'last_name', ''), '\s+', ' ', 'g'))))
          'soccer',
          btrim(x->>'first_name'),
          btrim(coalesce(x->>'last_name', '')),
          (x->>'skill')::smallint,
-         array(select jsonb_array_elements_text(x->'positions'))
+         array(select jsonb_array_elements_text(x->'positions')),
+         x->>'gender'
   from jsonb_array_elements(p_players) as x
   on conflict (sport, name_key) do update
     set first_name = excluded.first_name,
         last_name  = excluded.last_name,
         skill      = excluded.skill,
-        positions  = excluded.positions;
+        positions  = excluded.positions,
+        gender     = coalesce(excluded.gender, p.gender);
 
   get diagnostics saved = row_count;
   return saved;
@@ -230,9 +247,11 @@ end;
 $$;
 
 -- Edit one player in place, so their game history stays with them on a rename.
+-- (The older version without gender is dropped so only this one exists.)
+drop function if exists public.admin_update_player(text, uuid, text, text, smallint, text[]);
 create or replace function public.admin_update_player(
   p_password text, p_id uuid, p_first_name text, p_last_name text,
-  p_skill smallint, p_positions text[]
+  p_skill smallint, p_positions text[], p_gender text
 )
 returns void
 language plpgsql
@@ -245,7 +264,8 @@ begin
      set first_name = btrim(p_first_name),
          last_name  = btrim(coalesce(p_last_name, '')),
          skill      = p_skill,
-         positions  = p_positions
+         positions  = p_positions,
+         gender     = coalesce(p_gender, gender)
    where id = p_id;
   if not found then
     raise exception 'That player no longer exists';
@@ -342,7 +362,7 @@ revoke all on function public.lookup_players(text[])                          fr
 revoke all on function public.admin_verify(text)                              from public;
 revoke all on function public.admin_list_players(text)                        from public;
 revoke all on function public.admin_upsert_players(text, jsonb)               from public;
-revoke all on function public.admin_update_player(text, uuid, text, text, smallint, text[]) from public;
+revoke all on function public.admin_update_player(text, uuid, text, text, smallint, text[], text) from public;
 revoke all on function public.admin_remove_player(text, uuid)                 from public;
 revoke all on function public.admin_record_game(text, timestamptz, uuid[])    from public;
 revoke all on function public.admin_list_games(text)                          from public;
@@ -353,7 +373,7 @@ grant execute on function public.lookup_players(text[])                         
 grant execute on function public.admin_verify(text)                              to anon, authenticated;
 grant execute on function public.admin_list_players(text)                        to anon, authenticated;
 grant execute on function public.admin_upsert_players(text, jsonb)               to anon, authenticated;
-grant execute on function public.admin_update_player(text, uuid, text, text, smallint, text[]) to anon, authenticated;
+grant execute on function public.admin_update_player(text, uuid, text, text, smallint, text[], text) to anon, authenticated;
 grant execute on function public.admin_remove_player(text, uuid)                 to anon, authenticated;
 grant execute on function public.admin_record_game(text, timestamptz, uuid[])    to anon, authenticated;
 grant execute on function public.admin_list_games(text)                          to anon, authenticated;
