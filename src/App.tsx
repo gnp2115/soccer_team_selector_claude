@@ -1,12 +1,15 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import {
   EXAMPLE_PLAYERS,
+  GENDER_LABEL,
   POSITIONS,
   POSITION_SHORT,
+  countWomen,
   makeTeams,
   newId,
   skillGap,
   totalSkill,
+  type Gender,
   type Player,
   type Position,
   type Split,
@@ -53,6 +56,7 @@ const selectedStyle = { borderColor: BLUE, backgroundColor: BLUE, color: "#fff" 
 const unselectedStyle = { borderColor: COLUMBIA_SOFT, backgroundColor: "#fff", color: NAVY };
 const newTagStyle = { backgroundColor: "#f5ead0", color: "#7d6218" };
 const dbTagStyle = { backgroundColor: COLUMBIA_SOFT, color: BLUE };
+const womanTagStyle = { backgroundColor: "#f3e6f1", color: "#7a2e6b" };
 
 type Tab = "teams" | "players";
 
@@ -73,9 +77,36 @@ function formatGameTime(iso: string): string {
   });
 }
 
-function PosTags({ positions }: { positions: Position[] }) {
+/**
+ * Position tags, led by a gender tag: "W" for women, "M" only where asked for,
+ * and a warning for players whose gender was never recorded.
+ */
+function PosTags({
+  positions,
+  gender,
+  showMan,
+}: {
+  positions: Position[];
+  gender?: Gender | null;
+  showMan?: boolean;
+}) {
   return (
     <div className="mt-1 flex flex-wrap gap-1">
+      {gender === "W" && (
+        <span className="rounded-md px-1.5 py-0.5 text-xs font-bold" style={womanTagStyle}>
+          W
+        </span>
+      )}
+      {gender === "M" && showMan && (
+        <span className="rounded-md px-1.5 py-0.5 text-xs font-bold" style={dbTagStyle}>
+          M
+        </span>
+      )}
+      {gender === null && (
+        <span className="rounded-md px-1.5 py-0.5 text-xs font-bold" style={newTagStyle}>
+          gender missing
+        </span>
+      )}
       {positions.map((p) => (
         <span key={p} className="rounded-md px-1.5 py-0.5 text-xs font-bold" style={dbTagStyle}>
           {POSITION_SHORT[p]}
@@ -121,6 +152,30 @@ function SkillPicker({ value, onChange }: { value: number | null; onChange: (n: 
           style={value === n ? selectedStyle : unselectedStyle}
         >
           {n}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function GenderPicker({
+  value,
+  onChange,
+}: {
+  value: Gender | null;
+  onChange: (g: Gender) => void;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {(["M", "W"] as Gender[]).map((g) => (
+        <button
+          key={g}
+          type="button"
+          onClick={() => onChange(g)}
+          className="h-11 rounded-xl border-2 text-sm font-semibold transition"
+          style={value === g ? selectedStyle : unselectedStyle}
+        >
+          {GENDER_LABEL[g]}
         </button>
       ))}
     </div>
@@ -257,6 +312,8 @@ export default function App() {
   const canMake = players.length >= teamCount * 2;
   const savedToday = players.filter((p) => p.dbId);
   const newToday = players.filter((p) => !p.dbId);
+  const womenToday = countWomen(players);
+  const missingGenderToday = players.filter((p) => !p.gender).length;
 
   const inToday = (name: string) => players.some((p) => nameKey(p.name) === nameKey(name));
 
@@ -325,6 +382,7 @@ export default function App() {
   const [quickName, setQuickName] = useState("");
   const [quickSkill, setQuickSkill] = useState<number | null>(null);
   const [quickPositions, setQuickPositions] = useState<Position[]>([]);
+  const [quickGender, setQuickGender] = useState<Gender | null>(null);
   const [quickError, setQuickError] = useState<string | null>(null);
   const [quickBusy, setQuickBusy] = useState(false);
   /** Set when the typed name was looked up and is not in the database. */
@@ -337,6 +395,7 @@ export default function App() {
     setQuickName("");
     setQuickSkill(null);
     setQuickPositions([]);
+    setQuickGender(null);
     setQuickError(null);
     setQuickNewFor(null);
   };
@@ -350,7 +409,10 @@ export default function App() {
       if (inToday(quickTyped)) return setQuickError(`${quickTyped} is already in today's list`);
       if (quickSkill === null) return setQuickError("Pick a skill level for today");
       if (!quickPositions.length) return setQuickError("Pick at least one position for today");
-      addToToday([{ name: quickTyped, skill: quickSkill, positions: quickPositions }]);
+      if (quickGender === null) return setQuickError("Pick man or woman for today");
+      addToToday([
+        { name: quickTyped, skill: quickSkill, positions: quickPositions, gender: quickGender },
+      ]);
       resetQuick();
       return;
     }
@@ -372,7 +434,13 @@ export default function App() {
         if (inToday(name)) setQuickError(`${name} is already in today's list`);
         else {
           addToToday([
-            { name, skill: known.skill, positions: known.positions, dbId: known.id },
+            {
+              name,
+              skill: known.skill,
+              positions: known.positions,
+              gender: known.gender,
+              dbId: known.id,
+            },
           ]);
           resetQuick();
         }
@@ -399,7 +467,7 @@ export default function App() {
   const [pasteBusy, setPasteBusy] = useState(false);
 
   const pendingIncomplete = pending.filter(
-    (p) => p.skill === null || p.positions.length === 0,
+    (p) => p.skill === null || p.positions.length === 0 || p.gender === null,
   ).length;
   const pasteTotal = (preview?.players.length ?? 0) + pending.length;
 
@@ -432,12 +500,14 @@ export default function App() {
         name: fullName(p),
         skill: p.skill,
         positions: p.positions,
+        gender: p.gender,
         ...(p.dbId ? { dbId: p.dbId } : {}),
       })),
       ...pending.map((p) => ({
         name: fullName(p),
         skill: p.skill as number,
         positions: p.positions,
+        gender: p.gender,
       })),
     ];
     if (!ready.length) return;
@@ -455,6 +525,7 @@ export default function App() {
   const [formLast, setFormLast] = useState("");
   const [formSkill, setFormSkill] = useState<number | null>(null);
   const [formPositions, setFormPositions] = useState<Position[]>([]);
+  const [formGender, setFormGender] = useState<Gender | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSaving, setFormSaving] = useState(false);
@@ -468,6 +539,7 @@ export default function App() {
     setFormLast("");
     setFormSkill(null);
     setFormPositions([]);
+    setFormGender(null);
     setEditingId(null);
     setFormError(null);
   }
@@ -478,6 +550,7 @@ export default function App() {
     setFormLast(p.lastName);
     setFormSkill(p.skill);
     setFormPositions([...p.positions]);
+    setFormGender(p.gender);
     setFormError(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -488,12 +561,13 @@ export default function App() {
     if (!formFirst.trim()) return setFormError("First name is required");
     if (formSkill === null) return setFormError("Pick a skill level");
     if (!formPositions.length) return setFormError("Pick at least one position");
+    if (formGender === null) return setFormError("Pick man or woman");
     const details: PlayerDetails = {
       firstName: formFirst,
       lastName: formLast,
       skill: formSkill,
       positions: formPositions,
-      gender: null,
+      gender: formGender,
     };
     setFormSaving(true);
     try {
@@ -571,13 +645,18 @@ export default function App() {
   const unchangedFromSaved = (p: ParsedPlayer) => {
     if (p.isNew || !p.dbId) return false;
     const saved = dbPlayers.find((d) => d.id === p.dbId);
-    return !!saved && saved.skill === p.skill && samePositions(saved.positions, p.positions);
+    return (
+      !!saved &&
+      saved.skill === p.skill &&
+      saved.gender === p.gender &&
+      samePositions(saved.positions, p.positions)
+    );
   };
 
   const bulkChanges = bulkPreview ? bulkPreview.players.filter((p) => !unchangedFromSaved(p)) : [];
   const bulkUnchanged = bulkPreview ? bulkPreview.players.filter(unchangedFromSaved) : [];
   const bulkIncomplete = bulkPending.filter(
-    (p) => p.skill === null || p.positions.length === 0,
+    (p) => p.skill === null || p.positions.length === 0 || p.gender === null,
   ).length;
   const bulkCount = bulkChanges.length + bulkPending.length;
 
@@ -631,6 +710,8 @@ export default function App() {
       setBulkSaving(false);
     }
   };
+
+  const dbMissingGender = dbPlayers.filter((p) => p.gender === null).length;
 
   const sortedDb = [...dbPlayers].sort((a, b) =>
     sortBy === "games"
@@ -724,11 +805,13 @@ export default function App() {
                       {quickTyped} is a new player, not in the database.
                     </p>
                     <p className="text-xs text-slate-600">
-                      Set a skill and position for today. They will not be saved: someone with
-                      the database password can add them on the Players tab.
+                      Set a skill, gender and position for today. They will not be saved:
+                      someone with the database password can add them on the Players tab.
                     </p>
                     <FieldLabel>Skill level</FieldLabel>
                     <SkillPicker value={quickSkill} onChange={setQuickSkill} />
+                    <FieldLabel>Gender</FieldLabel>
+                    <GenderPicker value={quickGender} onChange={setQuickGender} />
                     <FieldLabel>Positions</FieldLabel>
                     <PositionPicker value={quickPositions} onChange={setQuickPositions} />
                   </div>
@@ -774,12 +857,12 @@ export default function App() {
                 >
                   <p className="text-xs font-semibold" style={{ color: BLUE }}>
                     One player per line. Players in the database only need a name. New players
-                    need a skill and position for today.
+                    need a skill, M or W, and a position for today.
                   </p>
                   <textarea
                     value={pasteText}
                     onChange={(e) => setPasteText(e.target.value)}
-                    placeholder={"Marlo Silva\nMario Braga, 5, Goalkeeper"}
+                    placeholder={"Marlo Silva\nAna Costa, 3, W, Defender"}
                     rows={6}
                     className="mt-2 w-full rounded-xl border-2 p-3 font-mono text-sm outline-none focus:border-[#1d4f91]"
                     style={{ borderColor: COLUMBIA_SOFT }}
@@ -813,7 +896,7 @@ export default function App() {
                             <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                               {fullName(p)}
                             </p>
-                            <PosTags positions={p.positions} />
+                            <PosTags positions={p.positions} gender={p.gender ?? null} />
                           </div>
                           <Tag isNew={p.isNew} />
                         </div>
@@ -828,8 +911,8 @@ export default function App() {
                             New players, not in the database ({pending.length})
                           </p>
                           <p className="text-xs text-slate-600">
-                            Set each one's skill and positions for today. They will not be
-                            saved; someone with the database password can add them later.
+                            Set each one's skill, gender and positions for today. They will not
+                            be saved; someone with the database password can add them later.
                           </p>
                           {pending.map((p, i) => (
                             <div
@@ -844,6 +927,11 @@ export default function App() {
                               <SkillPicker
                                 value={p.skill}
                                 onChange={(n) => updatePending(i, { skill: n })}
+                              />
+                              <FieldLabel>Gender</FieldLabel>
+                              <GenderPicker
+                                value={p.gender}
+                                onChange={(g) => updatePending(i, { gender: g })}
                               />
                               <FieldLabel>Positions</FieldLabel>
                               <PositionPicker
@@ -963,7 +1051,7 @@ export default function App() {
                       <p className="truncate font-bold" style={{ color: NAVY }}>
                         {p.name}
                       </p>
-                      <PosTags positions={p.positions} />
+                      <PosTags positions={p.positions} gender={p.gender ?? null} />
                     </div>
                     {dbConfigured && <Tag isNew={!p.dbId} />}
                     <button
@@ -1022,6 +1110,12 @@ export default function App() {
                   Need at least {teamCount * 2} players for {teamCount} teams.
                 </p>
               )}
+              {dbConfigured && missingGenderToday > 0 && (
+                <p className="mt-2 text-sm" style={{ color: "#7d6218" }}>
+                  {missingGenderToday} player{missingGenderToday === 1 ? " has" : "s have"} no
+                  gender saved, so the split of women may be off. Add it on the Players tab.
+                </p>
+              )}
             </Card>
           </section>
 
@@ -1066,6 +1160,10 @@ export default function App() {
                       <h3 className="font-extrabold">Team {i + 1}</h3>
                       <span className="text-sm" style={{ color: COLUMBIA }}>
                         {team.players.length} players · {totalSkill(team.players)} skill
+                        {womenToday > 0 &&
+                          ` · ${countWomen(team.players)} ${
+                            countWomen(team.players) === 1 ? "woman" : "women"
+                          }`}
                       </span>
                     </div>
                     <ul className="space-y-2 p-4">
@@ -1084,7 +1182,7 @@ export default function App() {
                                 </span>
                               )}
                             </p>
-                            <PosTags positions={p.positions} />
+                            <PosTags positions={p.positions} gender={p.gender ?? null} />
                           </div>
                         </li>
                       ))}
@@ -1252,7 +1350,7 @@ export default function App() {
                             <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                               {p.name}
                             </p>
-                            <PosTags positions={p.positions} />
+                            <PosTags positions={p.positions} gender={p.gender ?? null} />
                           </div>
                           <button
                             type="button"
@@ -1299,6 +1397,8 @@ export default function App() {
                   </div>
                   <FieldLabel>Skill level</FieldLabel>
                   <SkillPicker value={formSkill} onChange={setFormSkill} />
+                  <FieldLabel>Gender</FieldLabel>
+                  <GenderPicker value={formGender} onChange={setFormGender} />
                   <FieldLabel>Positions</FieldLabel>
                   <PositionPicker value={formPositions} onChange={setFormPositions} />
                   {formError && (
@@ -1342,14 +1442,15 @@ export default function App() {
                   ) : (
                     <>
                       <p className="text-xs font-semibold" style={{ color: BLUE }}>
-                        One player per line: name, skill, positions. New names are added.
-                        Names already in the database are updated if their skill or positions
-                        differ, and keep their games history.
+                        One player per line: name, skill, M or W, positions. New names are
+                        added. Names already in the database are updated if anything differs,
+                        and keep their games history. A name plus M or W is enough to fill in a
+                        saved player's gender.
                       </p>
                       <textarea
                         value={bulkText}
                         onChange={(e) => setBulkText(e.target.value)}
-                        placeholder={"Gabriel Pecora, 4, MID, ATT\nJohn Smith, 3, GK"}
+                        placeholder={"Gabriel Pecora, 4, M, MID, ATT\nAna Costa, 3, W, DEF"}
                         rows={8}
                         className="mt-2 w-full rounded-xl border-2 p-3 font-mono text-sm outline-none focus:border-[#1d4f91]"
                         style={{ borderColor: COLUMBIA_SOFT }}
@@ -1398,7 +1499,7 @@ export default function App() {
                                 <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                                   {fullName(p)}
                                 </p>
-                                <PosTags positions={p.positions} />
+                                <PosTags positions={p.positions} gender={p.gender ?? null} />
                               </div>
                               <span
                                 className="shrink-0 rounded-md px-2 py-0.5 text-xs font-bold"
@@ -1418,7 +1519,7 @@ export default function App() {
                                 New players missing details ({bulkPending.length})
                               </p>
                               <p className="text-xs text-slate-600">
-                                Set a skill and positions for each before saving.
+                                Set a skill, gender and positions for each before saving.
                               </p>
                               {bulkPending.map((p, i) => (
                                 <div
@@ -1433,6 +1534,11 @@ export default function App() {
                                   <SkillPicker
                                     value={p.skill}
                                     onChange={(n) => updateBulkPending(i, { skill: n })}
+                                  />
+                                  <FieldLabel>Gender</FieldLabel>
+                                  <GenderPicker
+                                    value={p.gender}
+                                    onChange={(g) => updateBulkPending(i, { gender: g })}
                                   />
                                   <FieldLabel>Positions</FieldLabel>
                                   <PositionPicker
@@ -1521,6 +1627,16 @@ export default function App() {
                 </div>
               </div>
 
+              {dbMissingGender > 0 && (
+                <p
+                  className="mb-2 rounded-xl border-2 p-3 text-sm"
+                  style={{ borderColor: GOLD, backgroundColor: "#fdf8ea", color: "#7d6218" }}
+                >
+                  {dbMissingGender} player{dbMissingGender === 1 ? " has" : "s have"} no gender
+                  yet. Edit them, or paste their names with M or W in the list above.
+                </p>
+              )}
+
               {dbPlayers.length === 0 ? (
                 <p
                   className="rounded-2xl border-2 border-dashed bg-white p-6 text-center text-sm"
@@ -1542,7 +1658,7 @@ export default function App() {
                           <p className="truncate font-bold" style={{ color: NAVY }}>
                             {fullName(p)}
                           </p>
-                          <PosTags positions={p.positions} />
+                          <PosTags positions={p.positions} gender={p.gender} showMan />
                         </div>
                         <div className="shrink-0 text-right">
                           <p

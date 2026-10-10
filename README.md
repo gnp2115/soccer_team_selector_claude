@@ -15,7 +15,8 @@ brief.
   (Goalkeeper, Defender, Midfielder, Attacker)
 - **Paste a list** copied from a WhatsApp group instead of typing each player. It reads names,
   skills and positions, shows a preview of what it understood, and adds nobody until you confirm
-- **Make teams**, choosing 2, 3 or 4 sides
+- **Make teams**, choosing 2, 3 or 4 sides. Women are spread evenly across the teams, and each
+  team card shows how many it has
 - **Reshuffle** for a different split, never the same one twice in a row
 - **Clear all** to empty the roster, with a confirm step
 
@@ -27,11 +28,13 @@ Nothing is saved. The roster lives in the browser and resets when the page reloa
 scores each one, keeps the best few and picks among them at random. The score is:
 
 ```
-missing keepers x 1000  +  skill gap x 10  +  position spread x 2
+missing keepers x 100,000  +  women spread x 1,000  +  skill gap x 10  +  position spread x 2
 ```
 
-So keeper coverage matters most, then even total skill, then spreading defenders and attackers
-across the teams. Keepers are assigned by letting the team with the fewest keeper options pick
+The weights make it a strict ranking: keeper coverage matters most, then an even split of women
+(never more than one apart), then even total skill, then spreading defenders and attackers
+across the teams. Strength already sits in each player's skill rating, so the women split is a
+rule of its own, not an adjustment to anyone's strength. Keepers are assigned by letting the team with the fewest keeper options pick
 first, and preferring a keeper-only player so the least outfield strength is lost.
 
 Randomising among the best few splits, rather than always taking the single best, is what makes
@@ -39,11 +42,13 @@ Reshuffle useful: you get a genuinely different split that is still fair.
 
 ## Reading a pasted list
 
-`src/lib/parse.ts` takes one player per line, as `name, skill, positions`:
+`src/lib/parse.ts` takes one player per line, as `name, skill, gender, positions`. After the
+name the fields can come in any order: a number is the skill, M or W is the gender (also Man,
+Woman, Male, Female, F, Homem, Mulher), and anything else must be a position:
 
 ```
-1. James Carter, 5, Goalkeeper
-- Chris Walker, 3, Defender, Midfielder
+1. James Carter, 5, M, Goalkeeper
+- Ana Costa, 3, W, Defender, Midfielder
 Will Hastings
 ```
 
