@@ -493,6 +493,7 @@ export default function App() {
       lastName: formLast,
       skill: formSkill,
       positions: formPositions,
+      gender: null,
     };
     setFormSaving(true);
     try {
@@ -513,7 +514,7 @@ export default function App() {
     setSavingNewId(p.id);
     try {
       await savePlayers(adminPw, [
-        { ...splitName(p.name), skill: p.skill, positions: p.positions },
+        { ...splitName(p.name), skill: p.skill, positions: p.positions, gender: p.gender ?? null },
       ]);
       const [saved] = (await lookupPlayers([p.name])).filter(
         (k) => nameKey(fullName(k)) === nameKey(p.name),
@@ -599,12 +600,14 @@ export default function App() {
         lastName: p.lastName,
         skill: p.skill,
         positions: p.positions,
+        gender: p.gender,
       })),
       ...bulkPending.map((p) => ({
         firstName: p.firstName,
         lastName: p.lastName,
         skill: p.skill as number,
         positions: p.positions,
+        gender: p.gender,
       })),
     ];
     const added = bulkChanges.filter((p) => p.isNew).length + bulkPending.length;

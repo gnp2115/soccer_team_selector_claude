@@ -1,4 +1,4 @@
-import type { Position } from "./teams";
+import type { Gender, Position } from "./teams";
 import {
   findSaved,
   fullName,
@@ -12,7 +12,9 @@ export type ParsedPlayer = {
   lastName: string;
   skill: number;
   positions: Position[];
-  /** True when the skill or positions came from the saved database. */
+  /** Null only for a saved player whose gender was never recorded. */
+  gender: Gender | null;
+  /** True when the skill, positions or gender came from the saved database. */
   fromRoster: boolean;
   /** True when this name is not in the saved database yet. */
   isNew: boolean;
@@ -30,6 +32,7 @@ export type PendingPlayer = {
   lastName: string;
   skill: number | null;
   positions: Position[];
+  gender: Gender | null;
 };
 
 export type SkippedLine = {
@@ -69,6 +72,19 @@ const POSITION_WORDS: Record<string, Position> = {
   atacante: "Attacker",
 };
 
+/** Accepted spellings for gender, lower-cased and accent-stripped. */
+const GENDER_WORDS: Record<string, Gender> = {
+  m: "M",
+  man: "M",
+  male: "M",
+  homem: "M",
+  w: "W",
+  f: "W",
+  woman: "W",
+  female: "W",
+  mulher: "W",
+};
+
 /** Strip accents so "meio-campo" and "meio-câmpo" both match. */
 function normalise(text: string) {
   return text
@@ -99,11 +115,12 @@ function stripLeadingClutter(line: string) {
 /**
  * Read a pasted list into players.
  *
- * Each line is a name, optionally followed by a skill and positions. For a name
- * already in the saved database, anything the line leaves out comes from the
- * database, and anything the line does say wins. A new name has no fallback: if
- * the line does not give both a skill and a position, it goes to `needsDetails`
- * so someone fills it in, rather than being given a made-up default.
+ * Each line is a name, optionally followed by a skill, a gender (M or W) and
+ * positions, in any order after the name. For a name already in the saved
+ * database, anything the line leaves out comes from the database, and anything
+ * the line does say wins. A new name has no fallback: if the line does not give
+ * a skill, a gender and a position, it goes to `needsDetails` so someone fills
+ * it in, rather than being given a made-up default.
  *
  * `todayNames` are the players already in today's list, which get skipped.
  */
@@ -149,32 +166,42 @@ export function parsePlayerList(
       continue;
     }
 
-    let rest = fields.slice(1).filter((f) => f.length > 0);
+    const rest = fields.slice(1).filter((f) => f.length > 0);
     let skill: number | null = null;
-
-    // A purely numeric second field is the skill.
-    if (rest.length && /^-?\d+([.,]\d+)?$/.test(rest[0]!)) {
-      const value = Number(rest[0]!.replace(",", "."));
-      if (!Number.isInteger(value) || value < 1 || value > 5) {
-        skipped.push({ line: original, reason: "skill must be 1 to 5" });
-        continue;
-      }
-      skill = value;
-      rest = rest.slice(1);
-    }
-
+    let gender: Gender | null = null;
     const positions: Position[] = [];
-    let badPosition = false;
+    let problem: string | null = null;
+
+    // After the name: a number is the skill, M or W (or the word spelled out)
+    // is the gender, and anything else has to be a position.
     for (const field of rest) {
-      const match = POSITION_WORDS[normalise(field)];
-      if (!match) {
-        badPosition = true;
+      const word = normalise(field);
+      if (/^-?\d+([.,]\d+)?$/.test(field)) {
+        const value = Number(field.replace(",", "."));
+        if (!Number.isInteger(value) || value < 1 || value > 5) {
+          problem = "skill must be 1 to 5";
+          break;
+        }
+        if (skill !== null && skill !== value) {
+          problem = "more than one skill";
+          break;
+        }
+        skill = value;
+      } else if (GENDER_WORDS[word]) {
+        if (gender !== null && gender !== GENDER_WORDS[word]) {
+          problem = "more than one gender";
+          break;
+        }
+        gender = GENDER_WORDS[word];
+      } else if (POSITION_WORDS[word]) {
+        if (!positions.includes(POSITION_WORDS[word])) positions.push(POSITION_WORDS[word]);
+      } else {
+        problem = "position not recognised";
         break;
       }
-      if (!positions.includes(match)) positions.push(match);
     }
-    if (badPosition) {
-      skipped.push({ line: original, reason: "position not recognised" });
+    if (problem) {
+      skipped.push({ line: original, reason: problem });
       continue;
     }
 
@@ -209,7 +236,8 @@ export function parsePlayerList(
         lastName: known.lastName,
         skill: skill ?? known.skill,
         positions: positions.length ? positions : [...known.positions],
-        fromRoster: skill === null || positions.length === 0,
+        gender: gender ?? known.gender,
+        fromRoster: skill === null || positions.length === 0 || gender === null,
         isNew: false,
         dbId: known.id,
       });
@@ -217,18 +245,19 @@ export function parsePlayerList(
     }
 
     const { firstName, lastName } = splitName(typedName);
-    if (skill !== null && positions.length > 0) {
+    if (skill !== null && positions.length > 0 && gender !== null) {
       players.push({
         firstName,
         lastName,
         skill,
         positions,
+        gender,
         fromRoster: false,
         isNew: true,
         dbId: null,
       });
     } else {
-      needsDetails.push({ line: original, firstName, lastName, skill, positions });
+      needsDetails.push({ line: original, firstName, lastName, skill, positions, gender });
     }
   }
 

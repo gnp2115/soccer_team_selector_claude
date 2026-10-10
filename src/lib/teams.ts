@@ -14,11 +14,18 @@ export const POSITION_SHORT: Record<Position, string> = {
   Attacker: "ATT",
 };
 
+/** M = man, W = woman. */
+export type Gender = "M" | "W";
+
+export const GENDER_LABEL: Record<Gender, string> = { M: "Man", W: "Woman" };
+
 export type Player = {
   id: string;
   name: string;
   skill: number;
   positions: Position[];
+  /** Null for players saved before gender was recorded. */
+  gender?: Gender | null;
   /** Set when this player is in the saved database; absent for new players. */
   dbId?: string;
 };
@@ -55,6 +62,10 @@ export function countWith(players: Player[], pos: Position) {
   return players.filter((p) => p.positions.includes(pos)).length;
 }
 
+export function countWomen(players: Player[]) {
+  return players.filter((p) => p.gender === "W").length;
+}
+
 function spread(values: number[]) {
   return Math.max(...values) - Math.min(...values);
 }
@@ -89,15 +100,20 @@ function pickKeepers(teams: Player[][]): (string | null)[] {
   return keepers;
 }
 
-/** Lower is better. Keeper coverage dominates, then skill balance, then position spread. */
+/**
+ * Lower is better. The weights make this a strict ranking: keeper coverage
+ * first, then an even split of women, then skill balance, then position spread.
+ * Strength is already in each player's skill; the women split is its own rule.
+ */
 function score(teams: Player[][]): number {
   const missingKeepers = pickKeepers(teams).filter((k) => k === null).length;
+  const womenSpread = spread(teams.map(countWomen));
   const skillSpread = spread(teams.map(totalSkill));
   const positionSpread = (["Defender", "Midfielder", "Attacker"] as Position[])
     .map((pos) => spread(teams.map((t) => countWith(t, pos))))
     .reduce((a, b) => a + b, 0);
 
-  return missingKeepers * 1000 + skillSpread * 10 + positionSpread * 2;
+  return missingKeepers * 100000 + womenSpread * 1000 + skillSpread * 10 + positionSpread * 2;
 }
 
 /** A split's identity, ignoring which card each team happens to appear on. */
@@ -179,16 +195,16 @@ export function skillGap(teams: Team[]) {
 }
 
 export const EXAMPLE_PLAYERS: Omit<Player, "id">[] = [
-  { name: "Bongo", skill: 3, positions: ["Goalkeeper"] },
-  { name: "Zeek", skill: 2, positions: ["Goalkeeper", "Defender"] },
-  { name: "Tarn", skill: 5, positions: ["Attacker"] },
-  { name: "Marlo", skill: 4, positions: ["Midfielder", "Attacker"] },
-  { name: "Quibb", skill: 3, positions: ["Defender"] },
-  { name: "Fenno", skill: 4, positions: ["Defender", "Midfielder"] },
-  { name: "Rilo", skill: 2, positions: ["Midfielder"] },
-  { name: "Draxa", skill: 5, positions: ["Midfielder"] },
-  { name: "Pim", skill: 1, positions: ["Attacker"] },
-  { name: "Vosk", skill: 4, positions: ["Defender"] },
-  { name: "Nabu", skill: 3, positions: ["Attacker", "Midfielder"] },
-  { name: "Olim", skill: 2, positions: ["Defender", "Attacker"] },
+  { name: "Bongo", skill: 3, positions: ["Goalkeeper"], gender: "M" },
+  { name: "Zeek", skill: 2, positions: ["Goalkeeper", "Defender"], gender: "W" },
+  { name: "Tarn", skill: 5, positions: ["Attacker"], gender: "M" },
+  { name: "Marlo", skill: 4, positions: ["Midfielder", "Attacker"], gender: "W" },
+  { name: "Quibb", skill: 3, positions: ["Defender"], gender: "M" },
+  { name: "Fenno", skill: 4, positions: ["Defender", "Midfielder"], gender: "M" },
+  { name: "Rilo", skill: 2, positions: ["Midfielder"], gender: "W" },
+  { name: "Draxa", skill: 5, positions: ["Midfielder"], gender: "M" },
+  { name: "Pim", skill: 1, positions: ["Attacker"], gender: "M" },
+  { name: "Vosk", skill: 4, positions: ["Defender"], gender: "M" },
+  { name: "Nabu", skill: 3, positions: ["Attacker", "Midfielder"], gender: "W" },
+  { name: "Olim", skill: 2, positions: ["Defender", "Attacker"], gender: "M" },
 ];

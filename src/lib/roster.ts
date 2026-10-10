@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { Position } from "./teams";
+import type { Gender, Position } from "./teams";
 
 /**
  * The central player database, stored in Supabase.
@@ -28,6 +28,8 @@ export type KnownPlayer = {
   lastName: string;
   skill: number;
   positions: Position[];
+  /** Null for players saved before gender was recorded. */
+  gender: Gender | null;
 };
 
 /** A player as password holders see them, with their game history. */
@@ -41,6 +43,8 @@ export type PlayerDetails = {
   lastName: string;
   skill: number;
   positions: Position[];
+  /** Null leaves a saved player's gender as it is. */
+  gender: Gender | null;
 };
 
 export type GameSummary = {
@@ -126,6 +130,7 @@ type PlayerRow = {
   last_name: string;
   skill: number;
   positions: Position[];
+  gender: Gender | null;
   games_played?: number;
   last_played_at?: string | null;
 };
@@ -136,6 +141,7 @@ const toKnown = (r: PlayerRow): KnownPlayer => ({
   lastName: r.last_name,
   skill: r.skill,
   positions: r.positions,
+  gender: r.gender ?? null,
 });
 
 async function call<T>(fn: string, args: Record<string, unknown>): Promise<T> {
@@ -178,6 +184,7 @@ export async function savePlayers(password: string, players: PlayerDetails[]): P
       last_name: p.lastName.trim(),
       skill: p.skill,
       positions: p.positions,
+      gender: p.gender,
     })),
   });
 }
@@ -194,6 +201,7 @@ export async function updatePlayer(
     p_last_name: p.lastName.trim(),
     p_skill: p.skill,
     p_positions: p.positions,
+    p_gender: p.gender,
   });
 }
 
