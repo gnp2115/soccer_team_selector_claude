@@ -8,12 +8,15 @@ import {
   makeTeams,
   newId,
   skillGap,
+  splitKey,
   totalSkill,
   type Gender,
   type Player,
   type Position,
   type Split,
+  type Team,
 } from "./lib/teams";
+import { makeFormation, swapSlots, type Formation } from "./lib/formation";
 import {
   extractNames,
   parsePlayerList,
@@ -208,6 +211,102 @@ function PositionPicker({
   );
 }
 
+/** "Marlo Silva" becomes "Marlo S." so names fit on the pitch. */
+function pitchName(name: string): string {
+  const parts = name.trim().split(/\s+/);
+  return parts.length > 1 ? `${parts[0]} ${parts[parts.length - 1]![0]}.` : parts[0]!;
+}
+
+/**
+ * One team laid out on a vertical pitch, its goal at the bottom. Each player is
+ * a circle with their skill (gold for the keeper), then their name and the
+ * position they are playing. Tapping a player picks them for a swap.
+ */
+function Pitch({
+  formation,
+  team,
+  picked,
+  onTap,
+}: {
+  formation: Formation;
+  team: Team;
+  picked: number | null;
+  onTap: (slot: number) => void;
+}) {
+  const line = "rgba(255,255,255,0.7)";
+  return (
+    <div
+      className="relative aspect-[3/4] w-full overflow-hidden rounded-xl"
+      style={{ background: "repeating-linear-gradient(180deg, #2f7d3b 0 10%, #2a7135 10% 20%)" }}
+    >
+      <div className="absolute inset-[3%] rounded-sm border-2" style={{ borderColor: line }} />
+      <div className="absolute top-1/2 right-[3%] left-[3%] border-t-2" style={{ borderColor: line }} />
+      <div
+        className="absolute top-1/2 left-1/2 aspect-square w-[28%] -translate-x-1/2 -translate-y-1/2 rounded-full border-2"
+        style={{ borderColor: line }}
+      />
+      <div
+        className="absolute top-[3%] left-1/2 h-[15%] w-[54%] -translate-x-1/2 border-2 border-t-0"
+        style={{ borderColor: line }}
+      />
+      <div
+        className="absolute bottom-[3%] left-1/2 h-[15%] w-[54%] -translate-x-1/2 border-2 border-b-0"
+        style={{ borderColor: line }}
+      />
+
+      {formation.slots.map((slot, si) => {
+        const p = team.players.find((x) => x.id === slot.playerId);
+        if (!p) return null;
+        const on = picked === si;
+        // Fewer players in a row leaves more room for each name.
+        const inRow = formation.slots.filter((x) => x.role === slot.role).length;
+        const width = Math.min(30, 95 / (inRow + 1));
+        return (
+          <button
+            key={si}
+            type="button"
+            onClick={() => onTap(si)}
+            aria-label={`${p.name}, ${slot.role}${on ? ", picked to swap" : ""}`}
+            className="absolute -translate-x-1/2 -translate-y-1/2 text-center"
+            style={{ left: `${slot.x}%`, top: `${slot.y}%`, width: `${width}%` }}
+          >
+            <span className="relative mx-auto block h-10 w-10">
+              <span
+                className="flex h-10 w-10 items-center justify-center rounded-full text-sm font-extrabold shadow-md transition"
+                style={{
+                  backgroundColor: slot.role === "Goalkeeper" ? GOLD : "#fff",
+                  color: NAVY,
+                  boxShadow: on ? `0 0 0 4px ${COLUMBIA}` : undefined,
+                  transform: on ? "scale(1.12)" : undefined,
+                }}
+              >
+                {p.skill}
+              </span>
+              {p.gender === "W" && (
+                <span
+                  className="absolute -top-1 -right-2 rounded-full px-1 text-[9px] font-bold"
+                  style={womanTagStyle}
+                >
+                  W
+                </span>
+              )}
+            </span>
+            <span
+              className="mt-1 block truncate text-[11px] font-bold text-white"
+              style={{ textShadow: "0 1px 2px rgba(0,0,0,0.6)" }}
+            >
+              {pitchName(p.name)}
+            </span>
+            <span className="block text-[10px] font-semibold text-white/85">
+              {POSITION_SHORT[slot.role]}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function FieldLabel({ children, htmlFor }: { children: ReactNode; htmlFor?: string }) {
   return (
     <label
@@ -304,6 +403,13 @@ export default function App() {
   const [recordedFor, setRecordedFor] = useState<string | null>(null);
   const [recordBusy, setRecordBusy] = useState(false);
 
+  // Line-ups on the pitch, and the split they were confirmed for. Any change to
+  // the teams (reshuffle, a player added or removed) makes the key stop matching,
+  // which hides the pitches until the teams are confirmed again.
+  const [formations, setFormations] = useState<Formation[] | null>(null);
+  const [confirmedKey, setConfirmedKey] = useState<string | null>(null);
+  const [picked, setPicked] = useState<{ team: number; slot: number } | null>(null);
+
   const todaySignature = `${gameAt}|${players
     .map((p) => nameKey(p.name))
     .sort()
@@ -349,6 +455,30 @@ export default function App() {
     const { split: next, unchanged } = makeTeams(players, teamCount, split);
     setSplit(next);
     setReshuffleNote(unchanged ? "No other fair split with these players" : null);
+  };
+
+  const confirmed = !!split && !!formations && confirmedKey === splitKey(split);
+
+  const confirmTeams = () => {
+    if (!split) return;
+    setFormations(split.teams.map(makeFormation));
+    setConfirmedKey(splitKey(split));
+    setPicked(null);
+  };
+
+  const reshufflePositions = (ti: number) => {
+    if (!split || !formations) return;
+    setFormations(formations.map((f, i) => (i === ti ? makeFormation(split.teams[ti]!) : f)));
+    setPicked(null);
+  };
+
+  /** Tap one player, then a team-mate on the same pitch, to swap their spots. */
+  const tapSlot = (ti: number, si: number) => {
+    if (!formations) return;
+    if (!picked || picked.team !== ti) return setPicked({ team: ti, slot: si });
+    if (picked.slot === si) return setPicked(null);
+    setFormations(formations.map((f, i) => (i === ti ? swapSlots(f, picked.slot, si) : f)));
+    setPicked(null);
   };
 
   const record = async () => {
@@ -1200,70 +1330,118 @@ export default function App() {
                 Reshuffle
               </button>
 
-              {/* Record the game */}
-              {dbConfigured && (
+              {!confirmed && (
+                <button
+                  type="button"
+                  onClick={confirmTeams}
+                  className={`mt-3 ${primaryBtn}`}
+                  style={{ backgroundColor: NAVY }}
+                >
+                  Confirm teams
+                </button>
+              )}
+
+              {confirmed && formations && (
                 <div className="mt-6">
-                  <SectionTitle>Record this game</SectionTitle>
-                  <Card>
-                    {!adminPw ? (
-                      <p className="text-sm" style={{ color: NAVY }}>
-                        Recording a game needs the database password. Unlock it on the{" "}
-                        <button
-                          type="button"
-                          onClick={() => setTab("players")}
-                          className="font-bold underline"
-                          style={{ color: BLUE }}
-                        >
-                          Players tab
-                        </button>
-                        .
-                      </p>
-                    ) : (
-                      <>
-                        <FieldLabel htmlFor="game-at">Game date and time</FieldLabel>
-                        <input
-                          id="game-at"
-                          type="datetime-local"
-                          value={gameAt}
-                          onChange={(e) => setGameAt(e.target.value)}
-                          className={inputClass}
-                          style={{ borderColor: COLUMBIA_SOFT }}
+                  <SectionTitle>Line-ups</SectionTitle>
+                  <p className="mb-3 text-xs text-slate-600">
+                    Tap a player, then a team-mate on the same pitch, to swap their spots.
+                  </p>
+                  <div className="space-y-4">
+                    {formations.map((formation, ti) => (
+                      <Card key={ti}>
+                        <div className="mb-2 flex items-baseline justify-between">
+                          <h3 className="font-extrabold" style={{ color: NAVY }}>
+                            Team {ti + 1}
+                          </h3>
+                          <span className="text-sm font-bold" style={{ color: BLUE }}>
+                            {formation.name}
+                          </span>
+                        </div>
+                        <Pitch
+                          formation={formation}
+                          team={split.teams[ti]!}
+                          picked={picked?.team === ti ? picked.slot : null}
+                          onTap={(si) => tapSlot(ti, si)}
                         />
-                        <p className="mt-2 text-xs text-slate-600">
-                          Counts one game for each of the {savedToday.length} player
-                          {savedToday.length === 1 ? "" : "s"} in the database.
-                          {newToday.length > 0 &&
-                            ` ${newToday.length} new player${
-                              newToday.length === 1 ? " is" : "s are"
-                            } not in the database and will not be counted.`}
-                        </p>
                         <button
                           type="button"
-                          onClick={() => void record()}
-                          disabled={
-                            alreadyRecorded || recordBusy || !gameAt || savedToday.length === 0
-                          }
-                          className={`mt-3 ${primaryBtn}`}
-                          style={
-                            alreadyRecorded || recordBusy || savedToday.length === 0
-                              ? undefined
-                              : { backgroundColor: NAVY }
-                          }
+                          onClick={() => reshufflePositions(ti)}
+                          className="mt-3 h-11 w-full rounded-xl border-2 bg-white text-sm font-bold"
+                          style={{ borderColor: BLUE, color: BLUE }}
                         >
-                          {alreadyRecorded
-                            ? "Game recorded"
-                            : recordBusy
-                              ? "Recording..."
-                              : "Record game"}
+                          Reshuffle positions
                         </button>
-                      </>
-                    )}
-                    {recordNote && (
-                      <p className="mt-2 text-sm font-semibold" style={{ color: BLUE }}>
-                        {recordNote}
-                      </p>
-                    )}
-                  </Card>
+                      </Card>
+                    ))}
+                  </div>
+
+                  {/* Record the game */}
+                  {dbConfigured && (
+                    <div className="mt-6">
+                      <SectionTitle>Record this game</SectionTitle>
+                      <Card>
+                        {!adminPw ? (
+                          <p className="text-sm" style={{ color: NAVY }}>
+                            Recording a game needs the database password. Unlock it on the{" "}
+                            <button
+                              type="button"
+                              onClick={() => setTab("players")}
+                              className="font-bold underline"
+                              style={{ color: BLUE }}
+                            >
+                              Players tab
+                            </button>
+                            .
+                          </p>
+                        ) : (
+                          <>
+                            <FieldLabel htmlFor="game-at">Game date and time</FieldLabel>
+                            <input
+                              id="game-at"
+                              type="datetime-local"
+                              value={gameAt}
+                              onChange={(e) => setGameAt(e.target.value)}
+                              className={inputClass}
+                              style={{ borderColor: COLUMBIA_SOFT }}
+                            />
+                            <p className="mt-2 text-xs text-slate-600">
+                              Counts one game for each of the {savedToday.length} player
+                              {savedToday.length === 1 ? "" : "s"} in the database.
+                              {newToday.length > 0 &&
+                                ` ${newToday.length} new player${
+                                  newToday.length === 1 ? " is" : "s are"
+                                } not in the database and will not be counted.`}
+                            </p>
+                            <button
+                              type="button"
+                              onClick={() => void record()}
+                              disabled={
+                                alreadyRecorded || recordBusy || !gameAt || savedToday.length === 0
+                              }
+                              className={`mt-3 ${primaryBtn}`}
+                              style={
+                                alreadyRecorded || recordBusy || savedToday.length === 0
+                                  ? undefined
+                                  : { backgroundColor: NAVY }
+                              }
+                            >
+                              {alreadyRecorded
+                                ? "Game recorded"
+                                : recordBusy
+                                  ? "Recording..."
+                                  : "Record game"}
+                            </button>
+                          </>
+                        )}
+                        {recordNote && (
+                          <p className="mt-2 text-sm font-semibold" style={{ color: BLUE }}>
+                            {recordNote}
+                          </p>
+                        )}
+                      </Card>
+                    </div>
+                  )}
                 </div>
               )}
             </section>
