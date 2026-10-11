@@ -686,6 +686,9 @@ export default function App() {
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [confirmGameId, setConfirmGameId] = useState<string | null>(null);
   const [savingNewId, setSavingNewId] = useState<string | null>(null);
+  /** New players the organiser chose not to save. They still play today. */
+  const [notSavingIds, setNotSavingIds] = useState<string[]>([]);
+  const newTodayToSave = newToday.filter((p) => !notSavingIds.includes(p.id));
 
   function resetForm() {
     setFormFirst("");
@@ -1555,16 +1558,17 @@ export default function App() {
 
               {dbError && <p className="mb-3 text-sm font-semibold text-red-700">{dbError}</p>}
 
-              {newToday.length > 0 && (
+              {newTodayToSave.length > 0 && (
                 <div className="mb-6">
-                  <SectionTitle>New today, not saved ({newToday.length})</SectionTitle>
+                  <SectionTitle>New today, not saved ({newTodayToSave.length})</SectionTitle>
                   <Card>
                     <p className="text-xs text-slate-600">
                       Added to today's list without being in the database. Save them with the
-                      skill and positions used today.
+                      skill and positions used today, or choose not to save them: they still
+                      play today either way.
                     </p>
                     <ul className="mt-2 space-y-2">
-                      {newToday.map((p) => (
+                      {newTodayToSave.map((p) => (
                         <li
                           key={p.id}
                           className="flex items-center gap-3 rounded-xl border-2 p-2"
@@ -1577,15 +1581,26 @@ export default function App() {
                             </p>
                             <PosTags positions={p.positions} gender={p.gender ?? null} />
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => void saveNewToday(p)}
-                            disabled={savingNewId === p.id}
-                            className="h-9 shrink-0 rounded-lg px-3 text-xs font-bold text-white disabled:bg-slate-300"
-                            style={savingNewId === p.id ? undefined : { backgroundColor: BLUE }}
-                          >
-                            {savingNewId === p.id ? "Saving..." : "Save to database"}
-                          </button>
+                          <div className="flex shrink-0 flex-col gap-1">
+                            <button
+                              type="button"
+                              onClick={() => void saveNewToday(p)}
+                              disabled={savingNewId === p.id}
+                              className="h-9 rounded-lg px-3 text-xs font-bold text-white disabled:bg-slate-300"
+                              style={savingNewId === p.id ? undefined : { backgroundColor: BLUE }}
+                            >
+                              {savingNewId === p.id ? "Saving..." : "Save to database"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setNotSavingIds((prev) => [...prev, p.id])}
+                              disabled={savingNewId === p.id}
+                              className="h-9 rounded-lg border-2 bg-white px-3 text-xs font-semibold text-slate-500"
+                              style={{ borderColor: COLUMBIA_SOFT }}
+                            >
+                              Don't save
+                            </button>
+                          </div>
                         </li>
                       ))}
                     </ul>
