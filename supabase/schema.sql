@@ -12,6 +12,8 @@
 --     public key cannot reach. It is set separately in the SQL editor and never
 --     appears in the code, GitHub or Vercel.
 --   * Game counts are calculated from recorded games, never typed in.
+--   * Contact details (email, phone) and the team a player supports are only
+--     returned by the password functions, never by the open lookup.
 --
 -- Safe to re-run: nothing here deletes data. Re-running it is also how the
 -- live database is upgraded (it adds any missing columns and replaces the
@@ -99,6 +101,31 @@ create table if not exists public.players (
 alter table public.players
   add column if not exists gender text check (gender in ('M', 'W'));
 
+-- Profile fields, all optional. A nickname is unique (in any capitals) and is
+-- enough on its own to find a player. Photos are small square JPEGs, shrunk in
+-- the browser and stored here as text, so no separate file store is needed.
+alter table public.players
+  add column if not exists nickname text
+    constraint players_nickname_check
+    check (nickname is null or char_length(btrim(nickname)) between 1 and 20),
+  add column if not exists supported_team text
+    constraint players_supported_team_check
+    check (supported_team is null or char_length(supported_team) <= 40),
+  add column if not exists email text
+    constraint players_email_check
+    check (email is null or (char_length(email) <= 100
+                             and email ~* '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$')),
+  add column if not exists phone text
+    constraint players_phone_check
+    check (phone is null or phone ~ '^[0-9+(). -]{4,30}$'),
+  add column if not exists photo text
+    constraint players_photo_check
+    check (photo is null or (photo like 'data:image/%' and char_length(photo) <= 200000));
+
+create unique index if not exists players_unique_nickname
+  on public.players (sport, lower(btrim(nickname)))
+  where nickname is not null;
+
 create index if not exists players_first_name_idx
   on public.players (sport, lower(btrim(first_name)));
 
@@ -108,6 +135,12 @@ create table if not exists public.games (
   played_at  timestamptz not null,
   created_at timestamptz not null default now()
 );
+
+-- Where the game was played. Optional.
+alter table public.games
+  add column if not exists location text
+    constraint games_location_check
+    check (location is null or char_length(location) <= 80);
 
 create table if not exists public.game_players (
   game_id   uuid not null references public.games (id) on delete cascade,
@@ -144,13 +177,15 @@ create trigger players_touch_updated_at
 -- Open to anyone
 -- ---------------------------------------------------------------------------
 
--- Return only the players whose names were asked for: by full name, or by
--- first name alone. There is no way to list the whole database from here.
--- (Dropped first because its output gained a column; it holds no data.)
+-- Return only the players whose names were asked for: by full name, nickname,
+-- or first name alone. There is no way to list the whole database from here,
+-- and contact details are never returned.
+-- (Dropped first because its output gained columns; it holds no data.)
 drop function if exists public.lookup_players(text[]);
 create or replace function public.lookup_players(p_names text[])
 returns table (
-  id uuid, first_name text, last_name text, skill smallint, positions text[], gender text
+  id uuid, first_name text, last_name text, skill smallint, positions text[], gender text,
+  nickname text, photo text
 )
 language sql
 stable
@@ -161,11 +196,12 @@ as $$
     select lower(btrim(regexp_replace(n, '\s+', ' ', 'g'))) as k
     from unnest((coalesce(p_names, '{}'::text[]))[1:60]) as n
   )
-  select p.id, p.first_name, p.last_name, p.skill, p.positions, p.gender
+  select p.id, p.first_name, p.last_name, p.skill, p.positions, p.gender, p.nickname, p.photo
   from public.players p
   where p.sport = 'soccer'
     and (p.name_key in (select k from wanted)
-         or lower(btrim(p.first_name)) in (select k from wanted));
+         or lower(btrim(p.first_name)) in (select k from wanted)
+         or lower(btrim(p.nickname)) in (select k from wanted));
 $$;
 
 create or replace function public.admin_verify(p_password text)
@@ -186,6 +222,7 @@ drop function if exists public.admin_list_players(text);
 create or replace function public.admin_list_players(p_password text)
 returns table (
   id uuid, first_name text, last_name text, skill smallint, positions text[], gender text,
+  nickname text, photo text, supported_team text, email text, phone text,
   games_played bigint, last_played_at timestamptz
 )
 language plpgsql
@@ -197,6 +234,7 @@ begin
   perform private.require_admin(p_password);
   return query
     select p.id, p.first_name, p.last_name, p.skill, p.positions, p.gender,
+           p.nickname, p.photo, p.supported_team, p.email, p.phone,
            count(gp.game_id), max(g.played_at)
     from public.players p
     left join public.game_players gp on gp.player_id = p.id
@@ -207,8 +245,9 @@ begin
 end;
 $$;
 
--- Add players, or update them when the name already exists. A player sent
--- without a gender keeps the gender already saved.
+-- Add players, or update them when the name already exists. For a saved
+-- player, any detail left out (gender, nickname, team, contact, photo) keeps
+-- the value already saved.
 create or replace function public.admin_upsert_players(p_password text, p_players jsonb)
 returns integer
 language plpgsql
@@ -224,7 +263,10 @@ begin
     raise exception 'Send between 1 and 60 players';
   end if;
 
-  insert into public.players as p (sport, first_name, last_name, skill, positions, gender)
+  insert into public.players as p (
+    sport, first_name, last_name, skill, positions, gender,
+    nickname, supported_team, email, phone, photo
+  )
   select distinct on (lower(btrim(regexp_replace(
            (x->>'first_name') || ' ' || coalesce(x->>'last_name', ''), '\s+', ' ', 'g'))))
          'soccer',
@@ -232,14 +274,24 @@ begin
          btrim(coalesce(x->>'last_name', '')),
          (x->>'skill')::smallint,
          array(select jsonb_array_elements_text(x->'positions')),
-         x->>'gender'
+         x->>'gender',
+         nullif(btrim(x->>'nickname'), ''),
+         nullif(btrim(x->>'supported_team'), ''),
+         nullif(btrim(x->>'email'), ''),
+         nullif(btrim(x->>'phone'), ''),
+         nullif(x->>'photo', '')
   from jsonb_array_elements(p_players) as x
   on conflict (sport, name_key) do update
     set first_name = excluded.first_name,
         last_name  = excluded.last_name,
         skill      = excluded.skill,
         positions  = excluded.positions,
-        gender     = coalesce(excluded.gender, p.gender);
+        gender         = coalesce(excluded.gender, p.gender),
+        nickname       = coalesce(excluded.nickname, p.nickname),
+        supported_team = coalesce(excluded.supported_team, p.supported_team),
+        email          = coalesce(excluded.email, p.email),
+        phone          = coalesce(excluded.phone, p.phone),
+        photo          = coalesce(excluded.photo, p.photo);
 
   get diagnostics saved = row_count;
   return saved;
@@ -247,12 +299,13 @@ end;
 $$;
 
 -- Edit one player in place, so their game history stays with them on a rename.
--- (The older version without gender is dropped so only this one exists.)
+-- The player comes as one JSON object, and only the fields sent are changed, so
+-- adding a field later does not change this function's shape. Sending a field
+-- as empty clears it (except gender, which can only be set).
+-- (Older versions with a list of parameters are dropped so only this one exists.)
 drop function if exists public.admin_update_player(text, uuid, text, text, smallint, text[]);
-create or replace function public.admin_update_player(
-  p_password text, p_id uuid, p_first_name text, p_last_name text,
-  p_skill smallint, p_positions text[], p_gender text
-)
+drop function if exists public.admin_update_player(text, uuid, text, text, smallint, text[], text);
+create or replace function public.admin_update_player(p_password text, p_id uuid, p_player jsonb)
 returns void
 language plpgsql
 security definer
@@ -260,12 +313,30 @@ set search_path = ''
 as $$
 begin
   perform private.require_admin(p_password);
+  if jsonb_typeof(p_player) is distinct from 'object' then
+    raise exception 'Send the player as one object';
+  end if;
   update public.players
-     set first_name = btrim(p_first_name),
-         last_name  = btrim(coalesce(p_last_name, '')),
-         skill      = p_skill,
-         positions  = p_positions,
-         gender     = coalesce(p_gender, gender)
+     set first_name     = case when p_player ? 'first_name'
+                               then btrim(p_player->>'first_name') else first_name end,
+         last_name      = case when p_player ? 'last_name'
+                               then btrim(coalesce(p_player->>'last_name', '')) else last_name end,
+         skill          = case when p_player ? 'skill'
+                               then (p_player->>'skill')::smallint else skill end,
+         positions      = case when p_player ? 'positions'
+                               then array(select jsonb_array_elements_text(p_player->'positions'))
+                               else positions end,
+         gender         = coalesce(p_player->>'gender', gender),
+         nickname       = case when p_player ? 'nickname'
+                               then nullif(btrim(p_player->>'nickname'), '') else nickname end,
+         supported_team = case when p_player ? 'supported_team'
+                               then nullif(btrim(p_player->>'supported_team'), '') else supported_team end,
+         email          = case when p_player ? 'email'
+                               then nullif(btrim(p_player->>'email'), '') else email end,
+         phone          = case when p_player ? 'phone'
+                               then nullif(btrim(p_player->>'phone'), '') else phone end,
+         photo          = case when p_player ? 'photo'
+                               then nullif(p_player->>'photo', '') else photo end
    where id = p_id;
   if not found then
     raise exception 'That player no longer exists';
@@ -285,10 +356,12 @@ begin
 end;
 $$;
 
--- Save a game and who played. Each player's game count goes up automatically,
--- because counts are calculated from these rows.
+-- Save a game, where it was played, and who played. Each player's game count
+-- goes up automatically, because counts are calculated from these rows.
+-- (The older version without a location is dropped so only this one exists.)
+drop function if exists public.admin_record_game(text, timestamptz, uuid[]);
 create or replace function public.admin_record_game(
-  p_password text, p_played_at timestamptz, p_player_ids uuid[]
+  p_password text, p_played_at timestamptz, p_player_ids uuid[], p_location text
 )
 returns integer
 language plpgsql
@@ -307,7 +380,8 @@ begin
     raise exception 'A game needs between 1 and 60 saved players';
   end if;
 
-  insert into public.games (played_at) values (p_played_at)
+  insert into public.games (played_at, location)
+  values (p_played_at, nullif(btrim(p_location), ''))
   returning id into new_game;
 
   insert into public.game_players (game_id, player_id)
@@ -321,8 +395,10 @@ begin
 end;
 $$;
 
+-- (Dropped first because its output gained a column; it holds no data.)
+drop function if exists public.admin_list_games(text);
 create or replace function public.admin_list_games(p_password text)
-returns table (id uuid, played_at timestamptz, players bigint)
+returns table (id uuid, played_at timestamptz, players bigint, location text)
 language plpgsql
 security definer
 set search_path = ''
@@ -331,7 +407,7 @@ as $$
 begin
   perform private.require_admin(p_password);
   return query
-    select g.id, g.played_at, count(gp.player_id)
+    select g.id, g.played_at, count(gp.player_id), g.location
     from public.games g
     left join public.game_players gp on gp.game_id = g.id
     where g.sport = 'soccer'
@@ -362,9 +438,9 @@ revoke all on function public.lookup_players(text[])                          fr
 revoke all on function public.admin_verify(text)                              from public;
 revoke all on function public.admin_list_players(text)                        from public;
 revoke all on function public.admin_upsert_players(text, jsonb)               from public;
-revoke all on function public.admin_update_player(text, uuid, text, text, smallint, text[], text) from public;
+revoke all on function public.admin_update_player(text, uuid, jsonb)          from public;
 revoke all on function public.admin_remove_player(text, uuid)                 from public;
-revoke all on function public.admin_record_game(text, timestamptz, uuid[])    from public;
+revoke all on function public.admin_record_game(text, timestamptz, uuid[], text) from public;
 revoke all on function public.admin_list_games(text)                          from public;
 revoke all on function public.admin_remove_game(text, uuid)                   from public;
 revoke all on function public.touch_players_updated_at()                      from public, anon, authenticated;
@@ -373,8 +449,8 @@ grant execute on function public.lookup_players(text[])                         
 grant execute on function public.admin_verify(text)                              to anon, authenticated;
 grant execute on function public.admin_list_players(text)                        to anon, authenticated;
 grant execute on function public.admin_upsert_players(text, jsonb)               to anon, authenticated;
-grant execute on function public.admin_update_player(text, uuid, text, text, smallint, text[], text) to anon, authenticated;
+grant execute on function public.admin_update_player(text, uuid, jsonb)          to anon, authenticated;
 grant execute on function public.admin_remove_player(text, uuid)                 to anon, authenticated;
-grant execute on function public.admin_record_game(text, timestamptz, uuid[])    to anon, authenticated;
+grant execute on function public.admin_record_game(text, timestamptz, uuid[], text) to anon, authenticated;
 grant execute on function public.admin_list_games(text)                          to anon, authenticated;
 grant execute on function public.admin_remove_game(text, uuid)                   to anon, authenticated;
