@@ -18,6 +18,7 @@ import {
 } from "./lib/teams";
 import { makeFormation, swapSlots, type Formation } from "./lib/formation";
 import { lineupText } from "./lib/lineup";
+import { shrinkPhoto } from "./lib/photo";
 import {
   extractNames,
   parsePlayerList,
@@ -63,6 +64,51 @@ const dbTagStyle = { backgroundColor: COLUMBIA_SOFT, color: BLUE };
 const womanTagStyle = { backgroundColor: "#f3e6f1", color: "#7a2e6b" };
 
 type Tab = "teams" | "players";
+
+/** Where the last game location is remembered, on this phone only. */
+const LOCATION_KEY = "teamSelector.lastLocation";
+
+/** Suggestions for "Supports". Any team can be typed. */
+const TEAM_SUGGESTIONS = [
+  "None",
+  "Flamengo",
+  "Corinthians",
+  "Palmeiras",
+  "São Paulo",
+  "Santos",
+  "Fluminense",
+  "Vasco da Gama",
+  "Botafogo",
+  "Grêmio",
+  "Internacional",
+  "Atlético Mineiro",
+  "Cruzeiro",
+  "Real Madrid",
+  "Barcelona",
+  "Atlético Madrid",
+  "Manchester United",
+  "Manchester City",
+  "Liverpool",
+  "Arsenal",
+  "Chelsea",
+  "Tottenham",
+  "Bayern Munich",
+  "Borussia Dortmund",
+  "Juventus",
+  "AC Milan",
+  "Inter Milan",
+  "Paris Saint-Germain",
+  "Boca Juniors",
+  "River Plate",
+  "Benfica",
+  "Porto",
+  "Inter Miami",
+  "New York City FC",
+  "New York Red Bulls",
+];
+
+const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const PHONE_PATTERN = /^[0-9+()\-. ]{4,30}$/;
 
 /** "2026-10-06T19:00" for the date-time input, in local time. */
 function localNow(): string {
@@ -131,6 +177,37 @@ function SkillBadge({ value, small }: { value: number; small?: boolean }) {
       {value}
     </span>
   );
+}
+
+/** The player's photo with their skill in a corner badge, or just the skill when there is no photo. */
+function PlayerBadge({
+  skill,
+  photo,
+  small,
+}: {
+  skill: number;
+  photo?: string | null;
+  small?: boolean;
+}) {
+  if (!photo) return <SkillBadge value={skill} small={small} />;
+  const size = small ? "h-8 w-8" : "h-9 w-9";
+  return (
+    <span className={`relative shrink-0 ${size}`}>
+      <img src={photo} alt="" className={`${size} rounded-full object-cover shadow-sm`} />
+      <span
+        className="absolute -right-1 -bottom-1 flex h-4 min-w-4 items-center justify-center rounded-full px-0.5 text-[10px] font-bold"
+        style={{ backgroundColor: COLUMBIA, color: NAVY }}
+      >
+        {skill}
+      </span>
+    </span>
+  );
+}
+
+/** A nickname shown after the full name, in quotes. */
+function NickTag({ nickname }: { nickname?: string | null }) {
+  if (!nickname) return null;
+  return <span className="ml-1 text-xs font-semibold text-slate-500">"{nickname}"</span>;
 }
 
 function Tag({ isNew }: { isNew: boolean }) {
@@ -273,16 +350,28 @@ function Pitch({
           >
             <span className="relative mx-auto block h-10 w-10">
               <span
-                className="flex h-10 w-10 items-center justify-center rounded-full text-sm font-extrabold shadow-md transition"
+                className="flex h-10 w-10 items-center justify-center overflow-hidden rounded-full text-sm font-extrabold shadow-md transition"
                 style={{
                   backgroundColor: slot.role === "Goalkeeper" ? GOLD : "#fff",
                   color: NAVY,
-                  boxShadow: on ? `0 0 0 4px ${COLUMBIA}` : undefined,
+                  boxShadow: on
+                    ? `0 0 0 4px ${COLUMBIA}`
+                    : p.photo && slot.role === "Goalkeeper"
+                      ? `0 0 0 3px ${GOLD}`
+                      : undefined,
                   transform: on ? "scale(1.12)" : undefined,
                 }}
               >
-                {p.skill}
+                {p.photo ? <img src={p.photo} alt="" className="h-full w-full object-cover" /> : p.skill}
               </span>
+              {p.photo && (
+                <span
+                  className="absolute -bottom-1 -left-2 rounded-full px-1 text-[9px] font-bold"
+                  style={{ backgroundColor: COLUMBIA, color: NAVY }}
+                >
+                  {p.skill}
+                </span>
+              )}
               {p.gender === "W" && (
                 <span
                   className="absolute -top-1 -right-2 rounded-full px-1 text-[9px] font-bold"
@@ -296,7 +385,7 @@ function Pitch({
               className="mt-1 block truncate text-[11px] font-bold text-white"
               style={{ textShadow: "0 1px 2px rgba(0,0,0,0.6)" }}
             >
-              {pitchName(p.name)}
+              {p.nickname?.trim() || pitchName(p.name)}
             </span>
             <span className="block text-[10px] font-semibold text-white/85">
               {POSITION_SHORT[slot.role]}
@@ -400,6 +489,22 @@ export default function App() {
   const [reshuffleNote, setReshuffleNote] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [gameAt, setGameAt] = useState(localNow);
+  const [gameWhere, setGameWhere] = useState(() => {
+    try {
+      return localStorage.getItem(LOCATION_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const changeWhere = (value: string) => {
+    setGameWhere(value);
+    try {
+      localStorage.setItem(LOCATION_KEY, value);
+    } catch {
+      // Private browsing can refuse storage; the box still works for this visit.
+    }
+  };
+  const gameWhen = gameAt ? formatGameTime(new Date(gameAt).toISOString()) : null;
   const [recordNote, setRecordNote] = useState<string | null>(null);
   const [recordedFor, setRecordedFor] = useState<string | null>(null);
   const [recordBusy, setRecordBusy] = useState(false);
@@ -493,7 +598,7 @@ export default function App() {
 
   const copyLineups = async () => {
     if (!split || !formations) return;
-    const text = lineupText(formations, split.teams);
+    const text = lineupText(formations, split.teams, { when: gameWhen, where: gameWhere });
     try {
       await navigator.clipboard.writeText(text);
       setCopyFallback(null);
@@ -512,11 +617,11 @@ export default function App() {
         adminPw,
         new Date(gameAt),
         savedToday.map((p) => p.dbId!),
-        null,
+        gameWhere,
       );
       setRecordedFor(todaySignature);
       setRecordNote(
-        `Game on ${formatGameTime(new Date(gameAt).toISOString())} recorded. ` +
+        `Game on ${gameWhen}${gameWhere.trim() ? ` at ${gameWhere.trim()}` : ""} recorded. ` +
           `${counted} player${counted === 1 ? "" : "s"} counted.` +
           (newToday.length
             ? ` ${newToday.length} new player${newToday.length === 1 ? " was" : "s were"} not counted, since they are not in the database yet.`
@@ -593,6 +698,8 @@ export default function App() {
               skill: known.skill,
               positions: known.positions,
               gender: known.gender,
+              nickname: known.nickname,
+              photo: known.photo,
               dbId: known.id,
             },
           ]);
@@ -655,6 +762,8 @@ export default function App() {
         skill: p.skill,
         positions: p.positions,
         gender: p.gender,
+        nickname: p.nickname,
+        photo: p.photo,
         ...(p.dbId ? { dbId: p.dbId } : {}),
       })),
       ...pending.map((p) => ({
@@ -662,6 +771,7 @@ export default function App() {
         skill: p.skill as number,
         positions: p.positions,
         gender: p.gender,
+        nickname: p.nickname,
       })),
     ];
     if (!ready.length) return;
@@ -680,6 +790,12 @@ export default function App() {
   const [formSkill, setFormSkill] = useState<number | null>(null);
   const [formPositions, setFormPositions] = useState<Position[]>([]);
   const [formGender, setFormGender] = useState<Gender | null>(null);
+  const [formNickname, setFormNickname] = useState("");
+  const [formTeam, setFormTeam] = useState("");
+  const [formEmail, setFormEmail] = useState("");
+  const [formPhone, setFormPhone] = useState("");
+  const [formPhoto, setFormPhoto] = useState<string | null>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [formSaving, setFormSaving] = useState(false);
@@ -697,6 +813,11 @@ export default function App() {
     setFormSkill(null);
     setFormPositions([]);
     setFormGender(null);
+    setFormNickname("");
+    setFormTeam("");
+    setFormEmail("");
+    setFormPhone("");
+    setFormPhoto(null);
     setEditingId(null);
     setFormError(null);
   }
@@ -708,6 +829,11 @@ export default function App() {
     setFormSkill(p.skill);
     setFormPositions([...p.positions]);
     setFormGender(p.gender);
+    setFormNickname(p.nickname ?? "");
+    setFormTeam(p.supportedTeam ?? "");
+    setFormEmail(p.email ?? "");
+    setFormPhone(p.phone ?? "");
+    setFormPhoto(p.photo);
     setFormError(null);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -719,12 +845,36 @@ export default function App() {
     if (formSkill === null) return setFormError("Pick a skill level");
     if (!formPositions.length) return setFormError("Pick at least one position");
     if (formGender === null) return setFormError("Pick man or woman");
+    const nick = formNickname.trim();
+    if (nick) {
+      // A nickname must point to one player only, so it cannot be anyone else's
+      // nickname, first name or full name.
+      const clash = dbPlayers.find(
+        (d) =>
+          d.id !== editingId &&
+          [d.nickname ?? "", d.firstName, fullName(d)].some((n) => n && nameKey(n) === nameKey(nick)),
+      );
+      if (clash) {
+        return setFormError(`"${nick}" is already used by ${fullName(clash)}. Pick another nickname.`);
+      }
+    }
+    if (formEmail.trim() && !EMAIL_PATTERN.test(formEmail.trim())) {
+      return setFormError("That email address does not look right.");
+    }
+    if (formPhone.trim() && !PHONE_PATTERN.test(formPhone.trim())) {
+      return setFormError("That phone number does not look right. Use digits, spaces, +, - or brackets.");
+    }
     const details: PlayerDetails = {
       firstName: formFirst,
       lastName: formLast,
       skill: formSkill,
       positions: formPositions,
       gender: formGender,
+      nickname: nick || null,
+      supportedTeam: formTeam,
+      email: formEmail,
+      phone: formPhone,
+      photo: formPhoto,
     };
     setFormSaving(true);
     try {
@@ -739,13 +889,32 @@ export default function App() {
     }
   };
 
+  const pickPhoto = async (file: File | undefined) => {
+    if (!file) return;
+    setPhotoBusy(true);
+    setFormError(null);
+    try {
+      setFormPhoto(await shrinkPhoto(file));
+    } catch (err) {
+      setFormError(friendlyError(err));
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
+
   /** "Save later": put a new player from today's list into the database. */
   const saveNewToday = async (p: Player) => {
     if (!adminPw) return;
     setSavingNewId(p.id);
     try {
       await savePlayers(adminPw, [
-        { ...splitName(p.name), skill: p.skill, positions: p.positions, gender: p.gender ?? null },
+        {
+          ...splitName(p.name),
+          skill: p.skill,
+          positions: p.positions,
+          gender: p.gender ?? null,
+          ...(p.nickname ? { nickname: p.nickname } : {}),
+        },
       ]);
       const [saved] = (await lookupPlayers([p.name])).filter(
         (k) => nameKey(fullName(k)) === nameKey(p.name),
@@ -806,6 +975,7 @@ export default function App() {
       !!saved &&
       saved.skill === p.skill &&
       saved.gender === p.gender &&
+      (saved.nickname ?? null) === (p.nickname ?? null) &&
       samePositions(saved.positions, p.positions)
     );
   };
@@ -837,6 +1007,7 @@ export default function App() {
         skill: p.skill,
         positions: p.positions,
         gender: p.gender,
+        nickname: p.nickname,
       })),
       ...bulkPending.map((p) => ({
         firstName: p.firstName,
@@ -844,6 +1015,7 @@ export default function App() {
         skill: p.skill as number,
         positions: p.positions,
         gender: p.gender,
+        nickname: p.nickname,
       })),
     ];
     const added = bulkChanges.filter((p) => p.isNew).length + bulkPending.length;
@@ -1013,8 +1185,8 @@ export default function App() {
                   style={{ borderColor: COLUMBIA, backgroundColor: "#f6fbfe" }}
                 >
                   <p className="text-xs font-semibold" style={{ color: BLUE }}>
-                    One player per line. Players in the database only need a name. New players
-                    need a skill, M or W, and a position for today.
+                    One player per line. Players in the database only need a name or nickname.
+                    New players need a skill, M or W, and a position for today.
                   </p>
                   <textarea
                     value={pasteText}
@@ -1048,10 +1220,11 @@ export default function App() {
                           className="mt-2 flex items-center gap-3 rounded-xl border-2 bg-white p-2"
                           style={{ borderColor: COLUMBIA_SOFT }}
                         >
-                          <SkillBadge value={p.skill} small />
+                          <PlayerBadge skill={p.skill} photo={p.photo} small />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                               {fullName(p)}
+<NickTag nickname={p.nickname} />
                             </p>
                             <PosTags positions={p.positions} gender={p.gender ?? null} />
                           </div>
@@ -1079,6 +1252,7 @@ export default function App() {
                             >
                               <p className="text-sm font-bold" style={{ color: NAVY }}>
                                 {fullName(p)}
+<NickTag nickname={p.nickname} />
                               </p>
                               <FieldLabel>Skill level</FieldLabel>
                               <SkillPicker
@@ -1203,10 +1377,11 @@ export default function App() {
                     className="flex items-center gap-3 rounded-xl border-2 bg-white p-3"
                     style={{ borderColor: COLUMBIA_SOFT }}
                   >
-                    <SkillBadge value={p.skill} />
+                    <PlayerBadge skill={p.skill} photo={p.photo} />
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-bold" style={{ color: NAVY }}>
                         {p.name}
+<NickTag nickname={p.nickname} />
                       </p>
                       <PosTags positions={p.positions} gender={p.gender ?? null} />
                     </div>
@@ -1326,10 +1501,11 @@ export default function App() {
                     <ul className="space-y-2 p-4">
                       {team.players.map((p) => (
                         <li key={p.id} className="flex items-center gap-3">
-                          <SkillBadge value={p.skill} small />
+                          <PlayerBadge skill={p.skill} photo={p.photo} small />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                               {p.name}
+<NickTag nickname={p.nickname} />
                               {team.keeperId === p.id && (
                                 <span
                                   className="ml-2 rounded-md px-1.5 py-0.5 text-xs font-extrabold"
@@ -1403,6 +1579,36 @@ export default function App() {
                     ))}
                   </div>
 
+                  <div className="mt-4">
+                    <Card>
+                      <p className="text-sm font-bold" style={{ color: NAVY }}>
+                        Game details
+                      </p>
+                      <FieldLabel htmlFor="game-at">Date and time</FieldLabel>
+                      <input
+                        id="game-at"
+                        type="datetime-local"
+                        value={gameAt}
+                        onChange={(e) => setGameAt(e.target.value)}
+                        className={inputClass}
+                        style={{ borderColor: COLUMBIA_SOFT }}
+                      />
+                      <FieldLabel htmlFor="game-where">Location</FieldLabel>
+                      <input
+                        id="game-where"
+                        value={gameWhere}
+                        onChange={(e) => changeWhere(e.target.value)}
+                        placeholder="e.g. Riverside Park, Pier 1"
+                        maxLength={80}
+                        className={inputClass}
+                        style={{ borderColor: COLUMBIA_SOFT }}
+                      />
+                      <p className="mt-2 text-xs text-slate-600">
+                        Goes into the WhatsApp message, and is saved when the game is recorded.
+                      </p>
+                    </Card>
+                  </div>
+
                   <button
                     type="button"
                     onClick={() => void copyLineups()}
@@ -1447,17 +1653,8 @@ export default function App() {
                           </p>
                         ) : (
                           <>
-                            <FieldLabel htmlFor="game-at">Game date and time</FieldLabel>
-                            <input
-                              id="game-at"
-                              type="datetime-local"
-                              value={gameAt}
-                              onChange={(e) => setGameAt(e.target.value)}
-                              className={inputClass}
-                              style={{ borderColor: COLUMBIA_SOFT }}
-                            />
-                            <p className="mt-2 text-xs text-slate-600">
-                              Counts one game for each of the {savedToday.length} player
+                            <p className="text-xs text-slate-600">
+                              Uses the date, time and location in Game details. Counts one game for each of the {savedToday.length} player
                               {savedToday.length === 1 ? "" : "s"} in the database.
                               {newToday.length > 0 &&
                                 ` ${newToday.length} new player${
@@ -1575,10 +1772,11 @@ export default function App() {
                           className="flex items-center gap-3 rounded-xl border-2 p-2"
                           style={{ borderColor: COLUMBIA_SOFT }}
                         >
-                          <SkillBadge value={p.skill} small />
+                          <PlayerBadge skill={p.skill} photo={p.photo} small />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                               {p.name}
+<NickTag nickname={p.nickname} />
                             </p>
                             <PosTags positions={p.positions} gender={p.gender ?? null} />
                           </div>
@@ -1642,6 +1840,103 @@ export default function App() {
                   <GenderPicker value={formGender} onChange={setFormGender} />
                   <FieldLabel>Positions</FieldLabel>
                   <PositionPicker value={formPositions} onChange={setFormPositions} />
+
+                  <FieldLabel htmlFor="nickname">Nickname (optional)</FieldLabel>
+                  <input
+                    id="nickname"
+                    value={formNickname}
+                    onChange={(e) => setFormNickname(e.target.value)}
+                    placeholder="e.g. Pirlo"
+                    maxLength={20}
+                    className={inputClass}
+                    style={{ borderColor: COLUMBIA_SOFT }}
+                  />
+                  <p className="mt-1 text-xs text-slate-500">
+                    Enough on its own to find them in a pasted list. No two players can share one.
+                  </p>
+
+                  <FieldLabel htmlFor="supports">Supports</FieldLabel>
+                  <input
+                    id="supports"
+                    list="team-suggestions"
+                    value={formTeam}
+                    onChange={(e) => setFormTeam(e.target.value)}
+                    placeholder="Pick or type a team, or None"
+                    maxLength={40}
+                    className={inputClass}
+                    style={{ borderColor: COLUMBIA_SOFT }}
+                  />
+                  <datalist id="team-suggestions">
+                    {TEAM_SUGGESTIONS.map((t) => (
+                      <option key={t} value={t} />
+                    ))}
+                  </datalist>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <FieldLabel htmlFor="email">Email</FieldLabel>
+                      <input
+                        id="email"
+                        type="email"
+                        value={formEmail}
+                        onChange={(e) => setFormEmail(e.target.value)}
+                        maxLength={100}
+                        className={inputClass}
+                        style={{ borderColor: COLUMBIA_SOFT }}
+                      />
+                    </div>
+                    <div>
+                      <FieldLabel htmlFor="phone">Phone</FieldLabel>
+                      <input
+                        id="phone"
+                        type="tel"
+                        value={formPhone}
+                        onChange={(e) => setFormPhone(e.target.value)}
+                        maxLength={30}
+                        className={inputClass}
+                        style={{ borderColor: COLUMBIA_SOFT }}
+                      />
+                    </div>
+                  </div>
+
+                  <FieldLabel>Photo</FieldLabel>
+                  <div className="flex items-center gap-3">
+                    {formPhoto ? (
+                      <img src={formPhoto} alt="" className="h-16 w-16 rounded-full object-cover shadow-sm" />
+                    ) : (
+                      <span
+                        className="flex h-16 w-16 items-center justify-center rounded-full border-2 border-dashed text-[11px] text-slate-400"
+                        style={{ borderColor: COLUMBIA }}
+                      >
+                        No photo
+                      </span>
+                    )}
+                    <label
+                      className="flex h-11 cursor-pointer items-center rounded-xl border-2 bg-white px-4 text-sm font-semibold"
+                      style={{ borderColor: COLUMBIA, color: NAVY }}
+                    >
+                      {photoBusy ? "Preparing..." : formPhoto ? "Change photo" : "Add photo"}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="sr-only"
+                        onChange={(e) => {
+                          void pickPhoto(e.target.files?.[0]);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                    {formPhoto && (
+                      <button
+                        type="button"
+                        onClick={() => setFormPhoto(null)}
+                        className="h-11 rounded-xl border-2 bg-white px-3 text-sm font-semibold text-slate-500"
+                        style={{ borderColor: COLUMBIA_SOFT }}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
                   {formError && (
                     <p className="mt-3 text-sm font-bold text-red-700">{formError}</p>
                   )}
@@ -1686,12 +1981,12 @@ export default function App() {
                         One player per line: name, skill, M or W, positions. New names are
                         added. Names already in the database are updated if anything differs,
                         and keep their games history. A name plus M or W is enough to fill in a
-                        saved player's gender.
+                        saved player's gender. Put a nickname in brackets after the name.
                       </p>
                       <textarea
                         value={bulkText}
                         onChange={(e) => setBulkText(e.target.value)}
-                        placeholder={"Gabriel Pecora, 4, M, MID, ATT\nAna Costa, 3, W, DEF"}
+                        placeholder={"Andrea Pirlo (Pirlo), 5, M, MID\nAna Costa, 3, W, DEF"}
                         rows={8}
                         className="mt-2 w-full rounded-xl border-2 p-3 font-mono text-sm outline-none focus:border-[#1d4f91]"
                         style={{ borderColor: COLUMBIA_SOFT }}
@@ -1735,10 +2030,11 @@ export default function App() {
                               className="mt-2 flex items-center gap-3 rounded-xl border-2 bg-white p-2"
                               style={{ borderColor: COLUMBIA_SOFT }}
                             >
-                              <SkillBadge value={p.skill} small />
+                              <PlayerBadge skill={p.skill} photo={p.photo} small />
                               <div className="min-w-0 flex-1">
                                 <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                                   {fullName(p)}
+<NickTag nickname={p.nickname} />
                                 </p>
                                 <PosTags positions={p.positions} gender={p.gender ?? null} />
                               </div>
@@ -1770,6 +2066,7 @@ export default function App() {
                                 >
                                   <p className="text-sm font-bold" style={{ color: NAVY }}>
                                     {fullName(p)}
+<NickTag nickname={p.nickname} />
                                   </p>
                                   <FieldLabel>Skill level</FieldLabel>
                                   <SkillPicker
@@ -1894,12 +2191,27 @@ export default function App() {
                       style={{ borderColor: editingId === p.id ? BLUE : COLUMBIA_SOFT }}
                     >
                       <div className="flex items-center gap-3">
-                        <SkillBadge value={p.skill} />
+                        <PlayerBadge skill={p.skill} photo={p.photo} />
                         <div className="min-w-0 flex-1">
                           <p className="truncate font-bold" style={{ color: NAVY }}>
                             {fullName(p)}
+<NickTag nickname={p.nickname} />
                           </p>
                           <PosTags positions={p.positions} gender={p.gender} showMan />
+                          {(p.supportedTeam || p.email || p.phone) && (
+                            <p className="mt-1 truncate text-[11px] text-slate-500">
+                              {[
+                                p.supportedTeam &&
+                                  (p.supportedTeam.toLowerCase() === "none"
+                                    ? "No team"
+                                    : `Supports ${p.supportedTeam}`),
+                                p.email,
+                                p.phone,
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </p>
+                          )}
                         </div>
                         <div className="shrink-0 text-right">
                           <p
@@ -1982,6 +2294,7 @@ export default function App() {
                           </p>
                           <p className="text-xs text-slate-500">
                             {g.players} player{g.players === 1 ? "" : "s"}
+                            {g.location && ` · ${g.location}`}
                           </p>
                         </div>
                         {confirmGameId === g.id ? (

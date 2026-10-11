@@ -21,8 +21,14 @@ brief.
 - **Confirm teams** to see each team on a pitch: keeper in goal, then defenders, midfielders and
   attackers, each player in a spot they play wherever the team allows. Tap two players to swap
   them, or Reshuffle positions for a new arrangement
-- **Copy for WhatsApp** to paste the confirmed line-ups into the group chat. Skill ratings are
-  left out of the message on purpose
+- **Copy for WhatsApp** to paste the confirmed line-ups into the group chat, headed with the game's
+  date, time and location. Players appear by nickname when they have one. Skill ratings are left
+  out of the message on purpose
+- **Player profiles** (Players tab, password only): nickname, the team they support, email,
+  phone and a photo. A nickname is unique and enough on its own to find a player in a pasted
+  list. Email and phone are only ever returned with the password; the open name lookup never
+  sends them. Photos are shrunk in the browser to a 160 x 160 JPEG (about 10 KB) and stored in
+  the player's database record, which suits a club-sized database without a separate file store
 - **Clear all** to empty the roster, with a confirm step
 
 Nothing is saved. The roster lives in the browser and resets when the page reloads.
@@ -47,8 +53,10 @@ Reshuffle useful: you get a genuinely different split that is still fair.
 
 ## Reading a pasted list
 
-`src/lib/parse.ts` takes one player per line, as `name, skill, gender, positions`. After the
-name the fields can come in any order: a number is the skill, M or W is the gender (also Man,
+`src/lib/parse.ts` takes one player per line, as `name, skill, gender, positions`, with an
+optional nickname in brackets after the name (`Andrea Pirlo (Pirlo), 5, M, MID`). A saved player
+is found by full name, then nickname, then a first name only one player has. After the name the
+fields can come in any order: a number is the skill, M or W is the gender (also Man,
 Woman, Male, Female, F, Homem, Mulher), and anything else must be a position:
 
 ```
