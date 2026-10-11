@@ -512,6 +512,7 @@ export default function App() {
         adminPw,
         new Date(gameAt),
         savedToday.map((p) => p.dbId!),
+        null,
       );
       setRecordedFor(todaySignature);
       setRecordNote(

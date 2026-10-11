@@ -14,6 +14,10 @@ export type ParsedPlayer = {
   positions: Position[];
   /** Null only for a saved player whose gender was never recorded. */
   gender: Gender | null;
+  /** From the line ("Andrea Pirlo (Pirlo)"), or else the saved one. */
+  nickname: string | null;
+  /** A saved player's picture; always null for a new name. */
+  photo: string | null;
   /** True when the skill, positions or gender came from the saved database. */
   fromRoster: boolean;
   /** True when this name is not in the saved database yet. */
@@ -33,6 +37,7 @@ export type PendingPlayer = {
   skill: number | null;
   positions: Position[];
   gender: Gender | null;
+  nickname: string | null;
 };
 
 export type SkippedLine = {
@@ -125,6 +130,19 @@ function stripLeadingClutter(line: string) {
  * `todayNames` are the players already in today's list, which get skipped.
  */
 /**
+ * Split "Andrea Pirlo (Pirlo)" into the name and the nickname in brackets.
+ * A line with no brackets has no nickname. Emoji anywhere in the name are
+ * dropped, since WhatsApp lists often end a name with a ✅.
+ */
+export function splitNickname(field: string): { name: string; nickname: string | null } {
+  const clean = field.replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, "");
+  const m = clean.match(/^(.*?)\s*\(([^()]*)\)\s*$/);
+  const name = (m ? m[1]! : clean).trim().replace(/\s+/g, " ");
+  const nickname = m ? m[2]!.trim().replace(/\s+/g, " ") || null : null;
+  return { name, nickname };
+}
+
+/**
  * Just the names from a pasted list, cleaned the same way the parser cleans
  * them, so they can be looked up in the database before parsing.
  */
@@ -133,7 +151,7 @@ export function extractNames(text: string): string[] {
   for (const rawLine of text.split(/\r?\n/)) {
     if (!rawLine.trim()) continue;
     const cleaned = stripLeadingClutter(rawLine);
-    const name = (cleaned.split(",")[0] ?? "").trim().replace(/\s+/g, " ");
+    const { name } = splitNickname(cleaned.split(",")[0] ?? "");
     if (name) names.push(name);
   }
   return names;
@@ -159,7 +177,7 @@ export function parsePlayerList(
 
     // The first field is always the name, even when it is empty.
     const fields = cleaned.split(",").map((f) => f.trim());
-    const typedName = (fields[0] ?? "").replace(/\s+/g, " ");
+    const { name: typedName, nickname: lineNickname } = splitNickname(fields[0] ?? "");
 
     if (!typedName) {
       skipped.push({ line: original, reason: "no name found" });
@@ -237,6 +255,8 @@ export function parsePlayerList(
         skill: skill ?? known.skill,
         positions: positions.length ? positions : [...known.positions],
         gender: gender ?? known.gender,
+        nickname: lineNickname ?? known.nickname,
+        photo: known.photo,
         fromRoster: skill === null || positions.length === 0 || gender === null,
         isNew: false,
         dbId: known.id,
@@ -252,12 +272,22 @@ export function parsePlayerList(
         skill,
         positions,
         gender,
+        nickname: lineNickname,
+        photo: null,
         fromRoster: false,
         isNew: true,
         dbId: null,
       });
     } else {
-      needsDetails.push({ line: original, firstName, lastName, skill, positions, gender });
+      needsDetails.push({
+        line: original,
+        firstName,
+        lastName,
+        skill,
+        positions,
+        gender,
+        nickname: lineNickname,
+      });
     }
   }
 

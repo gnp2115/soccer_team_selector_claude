@@ -8,6 +8,9 @@ import type { Gender, Position } from "./teams";
  * functions defined in supabase/schema.sql: lookup_players is open to anyone,
  * and every admin_ function checks the shared database password inside the
  * database itself. The publishable key used here is designed to be public.
+ *
+ * Contact details (email, phone) and the team a player supports only come back
+ * from the password functions; the open lookup never returns them.
  */
 
 // import.meta.env only exists inside a Vite build. Falling back to an empty
@@ -30,14 +33,24 @@ export type KnownPlayer = {
   positions: Position[];
   /** Null for players saved before gender was recorded. */
   gender: Gender | null;
+  nickname: string | null;
+  /** A small square picture, stored as a data URL. */
+  photo: string | null;
 };
 
-/** A player as password holders see them, with their game history. */
+/** A player as password holders see them, with their game history and details. */
 export type SavedPlayer = KnownPlayer & {
   gamesPlayed: number;
   lastPlayedAt: string | null;
+  supportedTeam: string | null;
+  email: string | null;
+  phone: string | null;
 };
 
+/**
+ * What gets saved. For the optional fields, leaving one out (undefined) keeps
+ * the saved value, and null clears it.
+ */
 export type PlayerDetails = {
   firstName: string;
   lastName: string;
@@ -45,12 +58,18 @@ export type PlayerDetails = {
   positions: Position[];
   /** Null leaves a saved player's gender as it is. */
   gender: Gender | null;
+  nickname?: string | null;
+  supportedTeam?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  photo?: string | null;
 };
 
 export type GameSummary = {
   id: string;
   playedAt: string;
   players: number;
+  location: string | null;
 };
 
 /** "Marlo Silva", or just "Marlo" when there is no last name. */
@@ -75,11 +94,12 @@ export type Match =
   | { kind: "none" };
 
 /**
- * Find a typed or pasted name among known players.
- *
- * A full name must match exactly. A first name on its own matches only when
- * exactly one known player has that first name. Two Marlos and a plain "Marlo"
- * is ambiguous, and the app asks for the last name rather than guessing.
+ * Find a typed or pasted name among known players, trying in order:
+ * 1. the exact full name
+ * 2. a nickname (no two players can share one, so this is never ambiguous)
+ * 3. a first name on its own, but only when exactly one known player has it.
+ *    Two Marlos and a plain "Marlo" is ambiguous, and the app asks for the last
+ *    name rather than guessing.
  */
 export function findSaved(name: string, known: KnownPlayer[]): Match {
   const wanted = nameKey(name);
@@ -87,6 +107,9 @@ export function findSaved(name: string, known: KnownPlayer[]): Match {
 
   const exact = known.find((p) => nameKey(fullName(p)) === wanted);
   if (exact) return { kind: "found", player: exact };
+
+  const byNickname = known.find((p) => p.nickname && nameKey(p.nickname) === wanted);
+  if (byNickname) return { kind: "found", player: byNickname };
 
   if (!wanted.includes(" ")) {
     const byFirst = known.filter((p) => nameKey(p.firstName) === wanted);
@@ -109,6 +132,14 @@ export function friendlyError(err: unknown): string {
   if (message.includes("players_unique_name")) {
     return "Someone with that name is already in the database.";
   }
+  if (message.includes("players_unique_nickname")) {
+    return "Another player already has that nickname.";
+  }
+  if (message.includes("players_email_check")) return "That email address does not look right.";
+  if (message.includes("players_phone_check")) {
+    return "That phone number does not look right. Use digits, spaces, +, - or brackets.";
+  }
+  if (message.includes("players_photo_check")) return "That photo is too large to save.";
   if (message.toLowerCase().includes("failed to fetch")) {
     return "Could not reach the database. Check your connection and try again.";
   }
@@ -131,6 +162,11 @@ type PlayerRow = {
   skill: number;
   positions: Position[];
   gender: Gender | null;
+  nickname?: string | null;
+  photo?: string | null;
+  supported_team?: string | null;
+  email?: string | null;
+  phone?: string | null;
   games_played?: number;
   last_played_at?: string | null;
 };
@@ -142,7 +178,28 @@ const toKnown = (r: PlayerRow): KnownPlayer => ({
   skill: r.skill,
   positions: r.positions,
   gender: r.gender ?? null,
+  nickname: r.nickname ?? null,
+  photo: r.photo ?? null,
 });
+
+const blankToNull = (v: string | null | undefined) => (v ?? "").trim() || null;
+
+/** The JSON the database functions take. Optional fields left undefined are not sent. */
+function toRow(p: PlayerDetails): Record<string, unknown> {
+  const row: Record<string, unknown> = {
+    first_name: p.firstName.trim(),
+    last_name: p.lastName.trim(),
+    skill: p.skill,
+    positions: p.positions,
+    gender: p.gender,
+  };
+  if (p.nickname !== undefined) row.nickname = blankToNull(p.nickname);
+  if (p.supportedTeam !== undefined) row.supported_team = blankToNull(p.supportedTeam);
+  if (p.email !== undefined) row.email = blankToNull(p.email);
+  if (p.phone !== undefined) row.phone = blankToNull(p.phone);
+  if (p.photo !== undefined) row.photo = p.photo || null;
+  return row;
+}
 
 async function call<T>(fn: string, args: Record<string, unknown>): Promise<T> {
   const { data, error } = await client().rpc(fn, args);
@@ -172,6 +229,9 @@ export async function listPlayers(password: string): Promise<SavedPlayer[]> {
     ...toKnown(r),
     gamesPlayed: Number(r.games_played ?? 0),
     lastPlayedAt: r.last_played_at ?? null,
+    supportedTeam: r.supported_team ?? null,
+    email: r.email ?? null,
+    phone: r.phone ?? null,
   }));
 }
 
@@ -179,13 +239,7 @@ export async function savePlayers(password: string, players: PlayerDetails[]): P
   if (!players.length) return;
   await call("admin_upsert_players", {
     p_password: password,
-    p_players: players.map((p) => ({
-      first_name: p.firstName.trim(),
-      last_name: p.lastName.trim(),
-      skill: p.skill,
-      positions: p.positions,
-      gender: p.gender,
-    })),
+    p_players: players.map(toRow),
   });
 }
 
@@ -197,11 +251,7 @@ export async function updatePlayer(
   await call("admin_update_player", {
     p_password: password,
     p_id: id,
-    p_first_name: p.firstName.trim(),
-    p_last_name: p.lastName.trim(),
-    p_skill: p.skill,
-    p_positions: p.positions,
-    p_gender: p.gender,
+    p_player: toRow(p),
   });
 }
 
@@ -214,25 +264,27 @@ export async function recordGame(
   password: string,
   playedAt: Date,
   playerIds: string[],
+  location: string | null,
 ): Promise<number> {
   return Number(
     await call<number>("admin_record_game", {
       p_password: password,
       p_played_at: playedAt.toISOString(),
       p_player_ids: playerIds,
+      p_location: blankToNull(location),
     }),
   );
 }
 
 export async function listGames(password: string): Promise<GameSummary[]> {
-  const rows = await call<{ id: string; played_at: string; players: number }[] | null>(
-    "admin_list_games",
-    { p_password: password },
-  );
+  const rows = await call<
+    { id: string; played_at: string; players: number; location: string | null }[] | null
+  >("admin_list_games", { p_password: password });
   return (rows ?? []).map((r) => ({
     id: r.id,
     playedAt: r.played_at,
     players: Number(r.players),
+    location: r.location ?? null,
   }));
 }
 

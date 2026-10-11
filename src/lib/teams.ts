@@ -26,6 +26,10 @@ export type Player = {
   positions: Position[];
   /** Null for players saved before gender was recorded. */
   gender?: Gender | null;
+  /** What the group calls them; shown on the pitch and in the WhatsApp message. */
+  nickname?: string | null;
+  /** A small square picture, stored as a data URL. */
+  photo?: string | null;
   /** Set when this player is in the saved database; absent for new players. */
   dbId?: string;
 };
