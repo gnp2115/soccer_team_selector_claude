@@ -33,7 +33,8 @@ to GitHub after each step that worked.
 - Add, edit and remove players: first and last name, skill 1 to 5, positions, gender, and an
   optional nickname, team they support, email, phone and photo
 - Paste a whole list into the database at once
-- "New today, not saved": save a newcomer with the details used today, or choose not to
+- "New today, not saved": save a newcomer with the details used today, or choose not to. A
+  newcomer who played a recorded game gets that game when saved under the same full name
 - Games played per player, last game, and recent games with their location. Counts are
   calculated from recorded games, never typed in
 - Tap a recorded game to see who played, or tap a player to see every game they played

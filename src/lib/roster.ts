@@ -259,12 +259,17 @@ export async function removePlayer(password: string, id: string): Promise<void> 
   await call("admin_remove_player", { p_password: password, p_id: id });
 }
 
-/** Save a game. Returns how many saved players were counted. */
+/**
+ * Save a game. Returns how many saved players were counted. Newcomers' names
+ * are stored with the game, and the database hands them the game when someone
+ * is saved under the same full name.
+ */
 export async function recordGame(
   password: string,
   playedAt: Date,
   playerIds: string[],
   location: string | null,
+  newcomerNames: string[],
 ): Promise<number> {
   return Number(
     await call<number>("admin_record_game", {
@@ -272,6 +277,7 @@ export async function recordGame(
       p_played_at: playedAt.toISOString(),
       p_player_ids: playerIds,
       p_location: blankToNull(location),
+      p_guest_names: newcomerNames,
     }),
   );
 }
@@ -288,9 +294,9 @@ export async function listGames(password: string): Promise<GameSummary[]> {
   }));
 }
 
-/** A player as listed in one recorded game. */
+/** A player as listed in one recorded game. No id means a newcomer not saved yet. */
 export type GamePlayer = {
-  id: string;
+  id: string | null;
   firstName: string;
   lastName: string;
   nickname: string | null;
@@ -299,10 +305,10 @@ export type GamePlayer = {
 /** Who played in one recorded game. */
 export async function gamePlayers(password: string, gameId: string): Promise<GamePlayer[]> {
   const rows = await call<
-    { id: string; first_name: string; last_name: string; nickname: string | null }[] | null
+    { id: string | null; first_name: string; last_name: string; nickname: string | null }[] | null
   >("admin_game_players", { p_password: password, p_game_id: gameId });
   return (rows ?? []).map((r) => ({
-    id: r.id,
+    id: r.id ?? null,
     firstName: r.first_name,
     lastName: r.last_name,
     nickname: r.nickname ?? null,

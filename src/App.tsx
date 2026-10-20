@@ -662,7 +662,7 @@ export default function App() {
   };
 
   const record = async () => {
-    if (!adminPw || !savedToday.length) return;
+    if (!adminPw || !players.length) return;
     setRecordBusy(true);
     try {
       const counted = await recordGame(
@@ -670,13 +670,14 @@ export default function App() {
         new Date(gameAt),
         savedToday.map((p) => p.dbId!),
         gameWhere,
+        newToday.map((p) => p.name),
       );
       setRecordedFor(todaySignature);
       setRecordNote(
         `Game on ${gameWhen}${gameWhere.trim() ? ` at ${gameWhere.trim()}` : ""} recorded. ` +
           `${counted} player${counted === 1 ? "" : "s"} counted.` +
           (newToday.length
-            ? ` ${newToday.length} new player${newToday.length === 1 ? " was" : "s were"} not counted, since they are not in the database yet.`
+            ? ` ${newToday.length} new player${newToday.length === 1 ? "" : "s"} will get this game once saved to the database under the same name.`
             : ""),
       );
       await refreshAdmin(adminPw);
@@ -1706,22 +1707,23 @@ export default function App() {
                         ) : (
                           <>
                             <p className="text-xs text-slate-600">
-                              Uses the date, time and location in Game details. Counts one game for each of the {savedToday.length} player
+                              Uses the date, time and location in Game details. Counts one game for
+                              each of the {savedToday.length} player
                               {savedToday.length === 1 ? "" : "s"} in the database.
                               {newToday.length > 0 &&
                                 ` ${newToday.length} new player${
-                                  newToday.length === 1 ? " is" : "s are"
-                                } not in the database and will not be counted.`}
+                                  newToday.length === 1 ? "" : "s"
+                                } will get this game once saved to the database under the same name.`}
                             </p>
                             <button
                               type="button"
                               onClick={() => void record()}
                               disabled={
-                                alreadyRecorded || recordBusy || !gameAt || savedToday.length === 0
+                                alreadyRecorded || recordBusy || !gameAt || players.length === 0
                               }
                               className={`mt-3 ${primaryBtn}`}
                               style={
-                                alreadyRecorded || recordBusy || savedToday.length === 0
+                                alreadyRecorded || recordBusy || players.length === 0
                                   ? undefined
                                   : { backgroundColor: NAVY }
                               }
@@ -2436,7 +2438,7 @@ export default function App() {
                               <p style={{ color: NAVY }}>
                                 <span className="font-bold">Who played: </span>
                                 {openGame.players
-                                  .map((x) => x.nickname || fullName(x))
+                                  .map((x) => (x.id ? x.nickname || fullName(x) : `${fullName(x)} (not saved)`))
                                   .join(", ")}
                               </p>
                             )}
