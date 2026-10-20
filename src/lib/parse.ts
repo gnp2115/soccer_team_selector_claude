@@ -107,11 +107,11 @@ function normalise(text: string) {
  */
 function stripLeadingClutter(line: string) {
   return line
-    .replace(/^[\s​]+/, "")
+    .replace(/^[\s\u200B]+/, "")
     .replace(/^(?:\d+\s*[.)\]-]\s*)/, "")
     .replace(/^[-*•·–—]+\s*/, "")
     .replace(
-      /^(?:[←-⯿☀-➿️\u{1F000}-\u{1FAFF}]\s*)+/u,
+      /^(?:[\u{2190}-\u{2BFF}\u{2600}-\u{27BF}\u{1F000}-\u{1FAFF}]\u{FE0F}?\s*)+/u,
       "",
     )
     .trim();
