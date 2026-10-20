@@ -102,7 +102,10 @@ publishable key, which is public by design, so all protection lives in the datab
 - Every table has Row Level Security on with no policies, and all table privileges are revoked
   from the public roles. The website cannot read or write any table directly
 - Instead it calls a short list of named functions. `lookup_players` is open, and returns only
-  the names asked for, so the database cannot be listed; it never returns email, phone or team
+  players whose full name, nickname or first name was asked for (up to 60 names per request);
+  it never returns email, phone or team. Someone guessing common first names could still pull
+  back much of the roster's names, photos and skill ratings, an accepted trade-off for a club
+  roster, since that is what anyone sees by typing a name on Pick teams
 - Every `admin_` function checks the shared password inside the database before doing anything.
   The password is stored only as a bcrypt hash in a private schema the public key cannot reach,
   and a wrong password waits one second before answering

@@ -216,8 +216,9 @@ create trigger players_touch_updated_at
 -- ---------------------------------------------------------------------------
 
 -- Return only the players whose names were asked for: by full name, nickname,
--- or first name alone. There is no way to list the whole database from here,
--- and contact details are never returned.
+-- or first name alone, at most 60 names per call. Contact details are never
+-- returned. Guessing many common first names could still recover much of the
+-- roster; that is accepted, since it is what Pick teams shows for a typed name.
 -- (Dropped first because its output gained columns; it holds no data.)
 drop function if exists public.lookup_players(text[]);
 create or replace function public.lookup_players(p_names text[])
