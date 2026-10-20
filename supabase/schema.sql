@@ -150,11 +150,49 @@ create table if not exists public.game_players (
 
 create index if not exists game_players_player_idx on public.game_players (player_id);
 
+-- Newcomers who played a recorded game before being saved, by the name they
+-- had that day. When a player is saved under the same full name, they get
+-- these games (see private.claim_guest_games below).
+create table if not exists public.game_guests (
+  game_id  uuid not null references public.games (id) on delete cascade,
+  name     text not null check (char_length(name) between 1 and 61),
+  name_key text not null,
+  primary key (game_id, name_key)
+);
+
+create index if not exists game_guests_name_key_idx on public.game_guests (name_key);
+
 -- Lock every table. No policies means nothing is allowed directly.
 alter table public.players      enable row level security;
 alter table public.games        enable row level security;
 alter table public.game_players enable row level security;
-revoke all on public.players, public.games, public.game_players from anon, authenticated;
+alter table public.game_guests  enable row level security;
+revoke all on public.players, public.games, public.game_players, public.game_guests
+  from anon, authenticated;
+
+-- Hand saved players any games they played as newcomers: every stored newcomer
+-- whose name now matches a saved player's full name becomes a normal entry for
+-- that game. Called whenever players are added or edited, and after a game is
+-- recorded.
+create or replace function private.claim_guest_games()
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  insert into public.game_players (game_id, player_id)
+  select gg.game_id, p.id
+  from public.game_guests gg
+  join public.players p on p.sport = 'soccer' and p.name_key = gg.name_key
+  on conflict do nothing;
+
+  delete from public.game_guests gg
+  using public.players p
+  where p.sport = 'soccer' and p.name_key = gg.name_key;
+end;
+$$;
+revoke all on function private.claim_guest_games() from public, anon, authenticated;
 
 -- Keep updated_at honest.
 create or replace function public.touch_players_updated_at()
@@ -294,6 +332,7 @@ begin
         photo          = coalesce(excluded.photo, p.photo);
 
   get diagnostics saved = row_count;
+  perform private.claim_guest_games();
   return saved;
 end;
 $$;
@@ -341,6 +380,7 @@ begin
   if not found then
     raise exception 'That player no longer exists';
   end if;
+  perform private.claim_guest_games();
 end;
 $$;
 
@@ -358,10 +398,13 @@ $$;
 
 -- Save a game, where it was played, and who played. Each player's game count
 -- goes up automatically, because counts are calculated from these rows.
--- (The older version without a location is dropped so only this one exists.)
+-- Newcomers' names are stored too, so they get the game once saved.
+-- (Older versions are dropped so only this one exists.)
 drop function if exists public.admin_record_game(text, timestamptz, uuid[]);
+drop function if exists public.admin_record_game(text, timestamptz, uuid[], text);
 create or replace function public.admin_record_game(
-  p_password text, p_played_at timestamptz, p_player_ids uuid[], p_location text
+  p_password text, p_played_at timestamptz, p_player_ids uuid[], p_location text,
+  p_guest_names text[]
 )
 returns integer
 language plpgsql
@@ -376,8 +419,9 @@ begin
   if p_played_at is null then
     raise exception 'A game needs a date and time';
   end if;
-  if p_player_ids is null or cardinality(p_player_ids) not between 1 and 60 then
-    raise exception 'A game needs between 1 and 60 saved players';
+  if coalesce(cardinality(p_player_ids), 0) > 60 or coalesce(cardinality(p_guest_names), 0) > 60
+     or coalesce(cardinality(p_player_ids), 0) + coalesce(cardinality(p_guest_names), 0) = 0 then
+    raise exception 'A game needs between 1 and 60 saved players and at most 60 newcomers';
   end if;
 
   insert into public.games (played_at, location)
@@ -387,10 +431,22 @@ begin
   insert into public.game_players (game_id, player_id)
   select new_game, p.id
   from public.players p
-  where p.id = any(p_player_ids)
+  where p.id = any(coalesce(p_player_ids, '{}'::uuid[]))
   on conflict do nothing;
 
   get diagnostics counted = row_count;
+
+  insert into public.game_guests (game_id, name, name_key)
+  select distinct on (g.k) new_game, btrim(g.n), g.k
+  from (
+    select n, lower(btrim(regexp_replace(n, '\s+', ' ', 'g'))) as k
+    from unnest(coalesce(p_guest_names, '{}'::text[])) as n
+  ) g
+  where g.k <> '' and char_length(btrim(g.n)) <= 61
+  on conflict do nothing;
+
+  -- A newcomer saved in the meantime gets the game straight away.
+  perform private.claim_guest_games();
   return counted;
 end;
 $$;
@@ -418,6 +474,7 @@ end;
 $$;
 
 -- Who played in one recorded game, for opening a game under Recent games.
+-- Newcomers not saved yet come last, with no id.
 create or replace function public.admin_game_players(p_password text, p_game_id uuid)
 returns table (id uuid, first_name text, last_name text, nickname text)
 language plpgsql
@@ -428,11 +485,18 @@ as $$
 begin
   perform private.require_admin(p_password);
   return query
-    select p.id, p.first_name, p.last_name, p.nickname
-    from public.game_players gp
-    join public.players p on p.id = gp.player_id
-    where gp.game_id = p_game_id
-    order by p.first_name, p.last_name;
+    select t.id, t.first_name, t.last_name, t.nickname
+    from (
+      select p.id, p.first_name, p.last_name, p.nickname
+      from public.game_players gp
+      join public.players p on p.id = gp.player_id
+      where gp.game_id = p_game_id
+      union all
+      select null::uuid, gg.name, ''::text, null::text
+      from public.game_guests gg
+      where gg.game_id = p_game_id
+    ) t
+    order by (t.id is null), t.first_name, t.last_name;
 end;
 $$;
 
@@ -480,7 +544,7 @@ revoke all on function public.admin_list_players(text)                        fr
 revoke all on function public.admin_upsert_players(text, jsonb)               from public;
 revoke all on function public.admin_update_player(text, uuid, jsonb)          from public;
 revoke all on function public.admin_remove_player(text, uuid)                 from public;
-revoke all on function public.admin_record_game(text, timestamptz, uuid[], text) from public;
+revoke all on function public.admin_record_game(text, timestamptz, uuid[], text, text[]) from public;
 revoke all on function public.admin_list_games(text)                          from public;
 revoke all on function public.admin_remove_game(text, uuid)                   from public;
 revoke all on function public.admin_game_players(text, uuid)                  from public;
@@ -493,7 +557,7 @@ grant execute on function public.admin_list_players(text)                       
 grant execute on function public.admin_upsert_players(text, jsonb)               to anon, authenticated;
 grant execute on function public.admin_update_player(text, uuid, jsonb)          to anon, authenticated;
 grant execute on function public.admin_remove_player(text, uuid)                 to anon, authenticated;
-grant execute on function public.admin_record_game(text, timestamptz, uuid[], text) to anon, authenticated;
+grant execute on function public.admin_record_game(text, timestamptz, uuid[], text, text[]) to anon, authenticated;
 grant execute on function public.admin_list_games(text)                          to anon, authenticated;
 grant execute on function public.admin_remove_game(text, uuid)                   to anon, authenticated;
 grant execute on function public.admin_game_players(text, uuid)                  to anon, authenticated;
