@@ -417,6 +417,46 @@ begin
 end;
 $$;
 
+-- Who played in one recorded game, for opening a game under Recent games.
+create or replace function public.admin_game_players(p_password text, p_game_id uuid)
+returns table (id uuid, first_name text, last_name text, nickname text)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+#variable_conflict use_column
+begin
+  perform private.require_admin(p_password);
+  return query
+    select p.id, p.first_name, p.last_name, p.nickname
+    from public.game_players gp
+    join public.players p on p.id = gp.player_id
+    where gp.game_id = p_game_id
+    order by p.first_name, p.last_name;
+end;
+$$;
+
+-- Every game one player played, newest first, for opening a player's card.
+create or replace function public.admin_player_games(p_password text, p_player_id uuid)
+returns table (id uuid, played_at timestamptz, location text, players bigint)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+#variable_conflict use_column
+begin
+  perform private.require_admin(p_password);
+  return query
+    select g.id, g.played_at, g.location,
+           (select count(*) from public.game_players x where x.game_id = g.id)
+    from public.game_players gp
+    join public.games g on g.id = gp.game_id
+    where gp.player_id = p_player_id
+    order by g.played_at desc
+    limit 500;
+end;
+$$;
+
 -- Delete a game recorded by mistake. Everyone's count corrects itself.
 create or replace function public.admin_remove_game(p_password text, p_id uuid)
 returns void
@@ -443,6 +483,8 @@ revoke all on function public.admin_remove_player(text, uuid)                 fr
 revoke all on function public.admin_record_game(text, timestamptz, uuid[], text) from public;
 revoke all on function public.admin_list_games(text)                          from public;
 revoke all on function public.admin_remove_game(text, uuid)                   from public;
+revoke all on function public.admin_game_players(text, uuid)                  from public;
+revoke all on function public.admin_player_games(text, uuid)                  from public;
 revoke all on function public.touch_players_updated_at()                      from public, anon, authenticated;
 
 grant execute on function public.lookup_players(text[])                          to anon, authenticated;
@@ -454,3 +496,5 @@ grant execute on function public.admin_remove_player(text, uuid)                
 grant execute on function public.admin_record_game(text, timestamptz, uuid[], text) to anon, authenticated;
 grant execute on function public.admin_list_games(text)                          to anon, authenticated;
 grant execute on function public.admin_remove_game(text, uuid)                   to anon, authenticated;
+grant execute on function public.admin_game_players(text, uuid)                  to anon, authenticated;
+grant execute on function public.admin_player_games(text, uuid)                  to anon, authenticated;

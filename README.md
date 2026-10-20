@@ -120,7 +120,9 @@ npm install
 npm run dev
 ```
 
-Then open the address it prints, usually http://localhost:5173. Without a database the team
+Then open the address it prints, usually http://localhost:5173. `npm test` runs the automated checks
+in `tests/` (team balancing, pitch layouts, the WhatsApp message, name matching and list
+reading); `npm run lint` checks the code style. Without a database the team
 picking still works; to connect one, create `.env.local` (it is ignored by git):
 
 ```
