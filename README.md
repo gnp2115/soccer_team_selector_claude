@@ -36,6 +36,7 @@ to GitHub after each step that worked.
 - "New today, not saved": save a newcomer with the details used today, or choose not to
 - Games played per player, last game, and recent games with their location. Counts are
   calculated from recorded games, never typed in
+- Tap a recorded game to see who played, or tap a player to see every game they played
 
 ## How the teams are balanced
 

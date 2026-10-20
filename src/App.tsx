@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import {
   EXAMPLE_PLAYERS,
   GENDER_LABEL,
@@ -31,9 +31,11 @@ import {
   findSaved,
   friendlyError,
   fullName,
+  gamePlayers,
   listGames,
   listPlayers,
   lookupPlayers,
+  playerGames,
   nameKey,
   recordGame,
   removeGame,
@@ -42,6 +44,7 @@ import {
   splitName,
   updatePlayer,
   verifyPassword,
+  type GamePlayer,
   type GameSummary,
   type PlayerDetails,
   type SavedPlayer,
@@ -441,12 +444,25 @@ export default function App() {
   const [dbPlayers, setDbPlayers] = useState<SavedPlayer[]>([]);
   const [games, setGames] = useState<GameSummary[]>([]);
   const [dbError, setDbError] = useState<string | null>(null);
+  // The one game, and the one player, opened to show their history. Loaded on tap.
+  const [openGame, setOpenGame] = useState<{
+    id: string;
+    players: GamePlayer[] | null;
+    error: string | null;
+  } | null>(null);
+  const [openPlayer, setOpenPlayer] = useState<{
+    id: string;
+    games: GameSummary[] | null;
+    error: string | null;
+  } | null>(null);
 
   const refreshAdmin = async (pw: string) => {
     try {
       const [p, g] = await Promise.all([listPlayers(pw), listGames(pw)]);
       setDbPlayers(p);
       setGames(g);
+      setOpenGame(null);
+      setOpenPlayer(null);
       setDbError(null);
     } catch (err) {
       setDbError(friendlyError(err));
@@ -477,7 +493,43 @@ export default function App() {
     setAdminPw(null);
     setDbPlayers([]);
     setGames([]);
+    setOpenGame(null);
+    setOpenPlayer(null);
     resetForm();
+  };
+
+  /** Tap a recorded game to see who played; tap again to close. */
+  const toggleGame = async (id: string) => {
+    if (!adminPw) return;
+    if (openGame?.id === id) return setOpenGame(null);
+    setOpenGame({ id, players: null, error: null });
+    try {
+      const list = await gamePlayers(adminPw, id);
+      setOpenGame((cur) => (cur?.id === id ? { id, players: list, error: null } : cur));
+    } catch (err) {
+      setOpenGame((cur) => (cur?.id === id ? { id, players: null, error: friendlyError(err) } : cur));
+    }
+  };
+
+  /** Tap a player to see every game they played; tap again to close. */
+  const togglePlayer = async (id: string) => {
+    if (!adminPw) return;
+    if (openPlayer?.id === id) return setOpenPlayer(null);
+    setOpenPlayer({ id, games: null, error: null });
+    try {
+      const list = await playerGames(adminPw, id);
+      setOpenPlayer((cur) => (cur?.id === id ? { id, games: list, error: null } : cur));
+    } catch (err) {
+      setOpenPlayer((cur) => (cur?.id === id ? { id, games: null, error: friendlyError(err) } : cur));
+    }
+  };
+
+  /** Enter or Space opens a tappable card, the same as a click. */
+  const onActivate = (fn: () => void) => (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fn();
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -1224,7 +1276,7 @@ export default function App() {
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                               {fullName(p)}
-<NickTag nickname={p.nickname} />
+                              <NickTag nickname={p.nickname} />
                             </p>
                             <PosTags positions={p.positions} gender={p.gender ?? null} />
                           </div>
@@ -1252,7 +1304,7 @@ export default function App() {
                             >
                               <p className="text-sm font-bold" style={{ color: NAVY }}>
                                 {fullName(p)}
-<NickTag nickname={p.nickname} />
+                                <NickTag nickname={p.nickname} />
                               </p>
                               <FieldLabel>Skill level</FieldLabel>
                               <SkillPicker
@@ -1381,7 +1433,7 @@ export default function App() {
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-bold" style={{ color: NAVY }}>
                         {p.name}
-<NickTag nickname={p.nickname} />
+                        <NickTag nickname={p.nickname} />
                       </p>
                       <PosTags positions={p.positions} gender={p.gender ?? null} />
                     </div>
@@ -1505,7 +1557,7 @@ export default function App() {
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                               {p.name}
-<NickTag nickname={p.nickname} />
+                              <NickTag nickname={p.nickname} />
                               {team.keeperId === p.id && (
                                 <span
                                   className="ml-2 rounded-md px-1.5 py-0.5 text-xs font-extrabold"
@@ -1776,7 +1828,7 @@ export default function App() {
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                               {p.name}
-<NickTag nickname={p.nickname} />
+                              <NickTag nickname={p.nickname} />
                             </p>
                             <PosTags positions={p.positions} gender={p.gender ?? null} />
                           </div>
@@ -2034,7 +2086,7 @@ export default function App() {
                               <div className="min-w-0 flex-1">
                                 <p className="truncate text-sm font-bold" style={{ color: NAVY }}>
                                   {fullName(p)}
-<NickTag nickname={p.nickname} />
+                                  <NickTag nickname={p.nickname} />
                                 </p>
                                 <PosTags positions={p.positions} gender={p.gender ?? null} />
                               </div>
@@ -2066,7 +2118,7 @@ export default function App() {
                                 >
                                   <p className="text-sm font-bold" style={{ color: NAVY }}>
                                     {fullName(p)}
-<NickTag nickname={p.nickname} />
+                                    <NickTag nickname={p.nickname} />
                                   </p>
                                   <FieldLabel>Skill level</FieldLabel>
                                   <SkillPicker
@@ -2190,12 +2242,19 @@ export default function App() {
                       className="rounded-xl border-2 bg-white p-3"
                       style={{ borderColor: editingId === p.id ? BLUE : COLUMBIA_SOFT }}
                     >
-                      <div className="flex items-center gap-3">
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={openPlayer?.id === p.id}
+                        onClick={() => void togglePlayer(p.id)}
+                        onKeyDown={onActivate(() => void togglePlayer(p.id))}
+                        className="flex cursor-pointer items-center gap-3"
+                      >
                         <PlayerBadge skill={p.skill} photo={p.photo} />
                         <div className="min-w-0 flex-1">
                           <p className="truncate font-bold" style={{ color: NAVY }}>
                             {fullName(p)}
-<NickTag nickname={p.nickname} />
+                            <NickTag nickname={p.nickname} />
                           </p>
                           <PosTags positions={p.positions} gender={p.gender} showMan />
                           {(p.supportedTeam || p.email || p.phone) && (
@@ -2221,7 +2280,7 @@ export default function App() {
                             {p.gamesPlayed}
                           </p>
                           <p className="text-[11px] text-slate-500">
-                            game{p.gamesPlayed === 1 ? "" : "s"}
+                            game{p.gamesPlayed === 1 ? "" : "s"} {openPlayer?.id === p.id ? "▴" : "▾"}
                           </p>
                         </div>
                       </div>
@@ -2269,6 +2328,34 @@ export default function App() {
                           </span>
                         )}
                       </div>
+                      {openPlayer?.id === p.id && (
+                        <div className="mt-2 rounded-lg p-2 text-xs" style={{ backgroundColor: "#f6fbfe" }}>
+                          {openPlayer.error ? (
+                            <p className="font-semibold text-red-700">{openPlayer.error}</p>
+                          ) : !openPlayer.games ? (
+                            <p className="text-slate-500">Loading games...</p>
+                          ) : openPlayer.games.length === 0 ? (
+                            <p className="text-slate-500">No games recorded yet.</p>
+                          ) : (
+                            <>
+                              <p className="mb-1 font-bold" style={{ color: NAVY }}>
+                                Games played ({openPlayer.games.length})
+                              </p>
+                              <ul className="space-y-1">
+                                {openPlayer.games.map((g) => (
+                                  <li key={g.id} style={{ color: NAVY }}>
+                                    <span className="font-semibold">{formatGameTime(g.playedAt)}</span>
+                                    {g.location && ` · ${g.location}`}
+                                    <span className="text-slate-500">
+                                      {` · ${g.players} player${g.players === 1 ? "" : "s"}`}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </>
+                          )}
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -2285,46 +2372,75 @@ export default function App() {
                     {games.map((g) => (
                       <li
                         key={g.id}
-                        className="flex items-center gap-2 rounded-xl border-2 bg-white p-3"
+                        className="rounded-xl border-2 bg-white p-3"
                         style={{ borderColor: COLUMBIA_SOFT }}
                       >
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-bold" style={{ color: NAVY }}>
-                            {formatGameTime(g.playedAt)}
-                          </p>
-                          <p className="text-xs text-slate-500">
-                            {g.players} player{g.players === 1 ? "" : "s"}
-                            {g.location && ` · ${g.location}`}
-                          </p>
-                        </div>
-                        {confirmGameId === g.id ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => void removeGameEntry(g.id)}
-                              className="h-9 rounded-lg px-3 text-xs font-bold text-white"
-                              style={{ backgroundColor: "#a3242f" }}
-                            >
-                              Delete game
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setConfirmGameId(null)}
-                              className="h-9 rounded-lg border-2 px-3 text-xs font-semibold"
-                              style={{ borderColor: COLUMBIA, color: NAVY }}
-                            >
-                              Keep
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setConfirmGameId(g.id)}
-                            className="h-9 rounded-lg border-2 px-3 text-xs font-semibold text-slate-500"
-                            style={{ borderColor: COLUMBIA_SOFT }}
+                        <div className="flex items-center gap-2">
+                          <div
+                            role="button"
+                            tabIndex={0}
+                            aria-expanded={openGame?.id === g.id}
+                            onClick={() => void toggleGame(g.id)}
+                            onKeyDown={onActivate(() => void toggleGame(g.id))}
+                            className="min-w-0 flex-1 cursor-pointer"
                           >
-                            Remove
-                          </button>
+                            <p className="text-sm font-bold" style={{ color: NAVY }}>
+                              {formatGameTime(g.playedAt)} {openGame?.id === g.id ? "▴" : "▾"}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {g.players} player{g.players === 1 ? "" : "s"}
+                              {g.location && ` · ${g.location}`}
+                            </p>
+                          </div>
+                          {confirmGameId === g.id ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void removeGameEntry(g.id)}
+                                className="h-9 rounded-lg px-3 text-xs font-bold text-white"
+                                style={{ backgroundColor: "#a3242f" }}
+                              >
+                                Delete game
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmGameId(null)}
+                                className="h-9 rounded-lg border-2 px-3 text-xs font-semibold"
+                                style={{ borderColor: COLUMBIA, color: NAVY }}
+                              >
+                                Keep
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmGameId(g.id)}
+                              className="h-9 rounded-lg border-2 px-3 text-xs font-semibold text-slate-500"
+                              style={{ borderColor: COLUMBIA_SOFT }}
+                            >
+                              Remove
+                            </button>
+                          )}
+                        </div>
+                        {openGame?.id === g.id && (
+                          <div className="mt-2 rounded-lg p-2 text-xs" style={{ backgroundColor: "#f6fbfe" }}>
+                            {openGame.error ? (
+                              <p className="font-semibold text-red-700">{openGame.error}</p>
+                            ) : !openGame.players ? (
+                              <p className="text-slate-500">Loading players...</p>
+                            ) : openGame.players.length === 0 ? (
+                              <p className="text-slate-500">
+                                No saved players left from this game.
+                              </p>
+                            ) : (
+                              <p style={{ color: NAVY }}>
+                                <span className="font-bold">Who played: </span>
+                                {openGame.players
+                                  .map((x) => x.nickname || fullName(x))
+                                  .join(", ")}
+                              </p>
+                            )}
+                          </div>
                         )}
                       </li>
                     ))}

@@ -288,6 +288,40 @@ export async function listGames(password: string): Promise<GameSummary[]> {
   }));
 }
 
+/** A player as listed in one recorded game. */
+export type GamePlayer = {
+  id: string;
+  firstName: string;
+  lastName: string;
+  nickname: string | null;
+};
+
+/** Who played in one recorded game. */
+export async function gamePlayers(password: string, gameId: string): Promise<GamePlayer[]> {
+  const rows = await call<
+    { id: string; first_name: string; last_name: string; nickname: string | null }[] | null
+  >("admin_game_players", { p_password: password, p_game_id: gameId });
+  return (rows ?? []).map((r) => ({
+    id: r.id,
+    firstName: r.first_name,
+    lastName: r.last_name,
+    nickname: r.nickname ?? null,
+  }));
+}
+
+/** Every game one player played, newest first. */
+export async function playerGames(password: string, playerId: string): Promise<GameSummary[]> {
+  const rows = await call<
+    { id: string; played_at: string; players: number; location: string | null }[] | null
+  >("admin_player_games", { p_password: password, p_player_id: playerId });
+  return (rows ?? []).map((r) => ({
+    id: r.id,
+    playedAt: r.played_at,
+    players: Number(r.players),
+    location: r.location ?? null,
+  }));
+}
+
 export async function removeGame(password: string, id: string): Promise<void> {
   await call("admin_remove_game", { p_password: password, p_id: id });
 }
